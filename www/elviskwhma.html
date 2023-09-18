@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Moving Average Chart</title>
+    <!-- Include jQuery library -->
+    <script src="http://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <!-- Include Chart.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+</head>
+<body>
+    <h1>Moving Average Chart</h1>
+    <label for="start_date">Start Date: </label>
+    <input type="date" id="start_date" value="2023-08-01">
+    <button id="plot_button">Plot</button>
+    <div style="width: 80%;">
+        <canvas id="chart" height="800"></canvas>
+    </div>
+
+    <script>
+        $(document).ready(function() {
+            // Define a variable to keep track of the chart instance
+            var myChart;
+
+            // Function to plot the chart based on the selected date
+            function plotChart(startDate) {
+                // Check if a chart instance exists and destroy it
+                if (myChart) {
+                    myChart.destroy();
+                }
+
+                // Get the JSON data from your PHP script with the selected start date
+                $.get('elvismvadb.php?start_date=' + startDate, function(data) {
+                    // Parse the JSON data
+                    var jsonData = JSON.parse(data);
+
+		    console.log(jsonData);
+
+                    // Extract the data for charting
+                    var days = [];
+                    var DifferenceKWhs = [];
+                    var MovingAverages= [];
+
+                    for (var i = 0; i < jsonData.length; i++) {
+                        days.push(jsonData[i].date);
+                        DifferenceKWhs.push(jsonData[i].DifferenceKWh);
+                        MovingAverages.push(jsonData[i].MovingAverages);
+			console.log(jsonData[i])
+                    }
+
+ 		    console.log(MovingAverages);
+
+                    // Create a chart using Chart.js
+                    var ctx = document.getElementById('chart').getContext('2d');
+                    myChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: days,
+                            datasets: [{
+                                label: 'DifferenceKWh',
+                                data: DifferenceKWhs,
+                                borderColor: 'blue',
+                                backgroundColor: 'rgba(0, 0, 255, 0.1)',
+                                fill: true
+                            }, {
+                                label: 'Moving Average',
+                                data: MovingAverages,
+                                borderColor: 'green',
+                                backgroundColor: 'rgba(0, 128, 0, 0.1)',
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    display: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Day'
+                                    }
+                                },
+                                y: {
+                                    display: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Value'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+
+            // Initial plot with the default date
+            plotChart($('#start_date').val());
+
+            // Handle the "Plot" button click event
+            $('#plot_button').click(function() {
+                var startDate = $('#start_date').val();
+                plotChart(startDate);
+            });
+        });
+    </script>
+</body>
+</html>
