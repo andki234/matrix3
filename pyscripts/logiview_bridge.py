@@ -27,24 +27,23 @@
 # Proper error handling ensures smooth operation and addresses potential issues.
 # -----------------------------------------------------------------------------
 
-import ctypes
 import logging
+import logging.handlers
 import setproctitle
 import argparse
 import sys
+import io
 import time
 import snap7
 import mysql.connector
 from mysql.connector import errorcode
 
 # Set to appropriate value to enable/disabled logging
-LOGING_LEVEL = logging.WARNING
+LOGGING_LEVEL = logging.WARNING
 SNAP7_LOG = False  # Set to appropriate value to enable/disabled Snap7 logging
 
-logging.getLogger().setLevel(level=LOGING_LEVEL)
-
 # Setting up process title
-setproctitle.setproctitle("logo8_server")
+setproctitle.setproctitle("logiview_bridge")
 
 # Setting up constants
 TCP_PORT = 102
@@ -144,6 +143,27 @@ def load_snap7_library(lib_path=None):
 
 
 def mainloop():
+    # Setting up the logging
+    logger = logging.getLogger('logiview_pm')
+    logger.setLevel(LOGGING_LEVEL)
+
+    # For syslog
+    syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+    syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+    syslog_handler.setFormatter(syslog_format)
+    logger.addHandler(syslog_handler)
+
+    # For console
+    console_handler = logging.StreamHandler()
+    console_format = logging.Formatter('%(levelname)s - %(message)s')
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+
+    # Create an in-memory text stream to capture stderr
+    captured_output = io.StringIO()
+    original_stderr = sys.stderr
+    sys.stderr = captured_output  # Redirect stderr to captured_output
+
     try:
         # Parse command line arguments
         parser = argparse.ArgumentParser(description="Logo8 server script")
@@ -190,7 +210,13 @@ def mainloop():
     }
 
     try:
-        cnx = mysql.connector.connect(MYSQL_CONFIG)
+        cnx = mysql.connector.connect(
+            user=MYSQL_CONFIG['user'],
+            password=MYSQL_CONFIG['password'],
+            host=MYSQL_CONFIG['host'],
+            database=MYSQL_CONFIG['database']
+        )
+
         logger.info("Connected to MySQL server successfully")
     except mysql.connector.Error as err:
         if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:

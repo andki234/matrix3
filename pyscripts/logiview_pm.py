@@ -51,7 +51,7 @@ import logging.handlers
 setproctitle.setproctitle("logiview_pm")
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 
 
 def mask_password(args):
@@ -112,17 +112,17 @@ def main():
         args = parser.parse_args()
 
         scripts_to_monitor = {
-            "/home/pi/pyscripts/logo8_ds.py": (
-                "logo8_ds",
+            "/home/pi/logiview/logiview_ds.py": (
+                "logiview_ds",
                 ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
                 True,  # use_authbind for this script
-                False  # do not use_setsid for this script
+                True  # do not use_setsid for this script
             ),
-            "/home/pi/pyscripts/logo8_server.py": (
-                "logo8_server",
+            "/home/pi/logiview/logiview_bridge.py": (
+                "logiview_bridge",
                 ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
                 True,  # use_authbind for this script
-                False  # do not use_setsid for this script
+                True  # do not use_setsid for this script
             ),
             # ... add more scripts with their titles, arguments, authbind necessity, and setsid usage as needed
         }
