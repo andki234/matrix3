@@ -69,7 +69,7 @@ TEMP_COLUMNS = [
     "T2BOT",
     "T3TOP",
     "T3MID",
-    "T3BOT",
+    "T3BOT"
 ]
 
 # Setting up data columns to get data from PLC and send to MySQL if set to true.
@@ -85,14 +85,13 @@ STATUS_COLUMNS = [
     ("VW22", False),
     ("VW24", False),
     ("PT2T1", True),
-    ("PT1T2", True),
+    ("PT1T2", True)
 ]
 
 
 def get_temperature_value(cnx, cursor, column_name):
     sql_str = (
-        f"SELECT {column_name} FROM logiview.tempdata order by datetime desc limit 1"
-    )
+        f"SELECT {column_name} FROM logiview.tempdata order by datetime desc limit 1")
     try:
         # Execute the SQL statement and fetch the temperature data
         cursor.execute(sql_str)
@@ -106,30 +105,34 @@ def get_temperature_value(cnx, cursor, column_name):
         cnx.rollback()  # Roll back the transaction in case of error
         return None
 
-
 # This function sets the value in dataDB1 for the given index
+
+
 def set_data_to_db1(dataDB1, start_index, value):
     dataDB1[start_index] = (value & 0xFF00) >> 8
     dataDB1[start_index + 1] = value & 0x00FF
     logging.info(f"Set value in dataDB1 at position {start_index}: {value}")
 
-
 # This function retrieves the status value from dataDB1 for the given index
+
+
 def get_status_from_db1(dataDB1, index):
     value = (dataDB1[index] << 8) | dataDB1[index + 1]
     logging.info(f"Retrieved value from dataDB1 at position {index}: {value}")
     return value
 
-
 # This function updates the latest database entry with the status value for the provided column_name
+
+
 def update_status_in_db(cnx, cursor, column_name, value):
     sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
     cursor.execute(sql_str)
     cnx.commit()
     logging.info(f"Updated {column_name} with value {value} in the database")
 
-
 # This function loads the Snap7 library. If a path is provided, it will attempt to load the library from that path.
+
+
 def load_snap7_library(lib_path=None):
     if len(sys.argv) > 1:
         snap7.common.load_library(lib_path)
@@ -137,8 +140,9 @@ def load_snap7_library(lib_path=None):
         # Attempt auto-loading. If Snap7 is not in a standard location, this may raise an error.
         snap7.common.load_library()
 
-
 # This is the main loop of the script.
+
+
 def mainloop():
     try:
         # Parse command line arguments
@@ -146,11 +150,9 @@ def mainloop():
         parser.add_argument("--host", required=True, help="MySQL server ip address")
         parser.add_argument("-u", "--user", required=True, help="MySQL server username")
         parser.add_argument("-p", "--password", required=True, help="MySQL password")
-        parser.add_argument(
-            "-s", "--snap7-lib", default=None, help="Path to Snap7 library"
-        )
+        parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
         args = parser.parse_args()
-        logging.warning(f"Parsed command-line arguments successfully!")
+        logging.info(f"Parsed command-line arguments successfully!")
     except argparse.ArgumentError as e:
         logging.error(f"Error parsing command-line arguments: {e}")
         sys.exit(1)
@@ -181,19 +183,15 @@ def mainloop():
 
     # Setting up MySQL connection
     MYSQL_CONFIG = {
-        "user": args.user,
-        "password": args.password,
-        "host": args.host,
-        "database": "logiview",
+        'user': args.user,
+        'password': args.password,
+        'host': args.host,
+        'database': 'logiview'
     }
 
     try:
-        cnx = mysql.connector.connect(
-            user="pi",
-            password="b%HcSLYsFqOp7E0B*ER8#!",
-            host="192.168.0.240",
-            database="logiview",
-        )
+        cnx = mysql.connector.connect(MYSQL_CONFIG)
+        logger.info("Connected to MySQL server successfully")
     except mysql.connector.Error as err:
         if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
             logger.error("MySQL connection error: Incorrect username or password")
@@ -209,46 +207,34 @@ def mainloop():
             for idx, temp in enumerate(TEMP_COLUMNS):
                 value = get_temperature_value(cnx, cursor, temp)
                 set_data_to_db1(dataDB1, idx * 2, value)
-                logging.info(f"Set value in dataDB1 at position {idx * 2}: {value}")
+                logging.info(
+                    f"Set value in dataDB1 at position {idx * 2}: {value}")
 
             while True:
                 event = server.pick_event()
                 if event:
                     logging.info(server.event_text(event))
-                    logging.info(
-                        "dataDB1 content (hex): "
-                        + " ".join([f"{byte:02X}" for byte in dataDB1])
-                    )
-                    logging.info(
-                        "dataPE1 content (hex): "
-                        + " ".join([f"{byte:02X}" for byte in dataPE1])
-                    )
+                    logging.info("dataDB1 content (hex): " + " ".join([f"{byte:02X}" for byte in dataDB1]))
+                    logging.info("dataPE1 content (hex): " + " ".join([f"{byte:02X}" for byte in dataPE1]))
 
                     # Read from dataDB1 and update database for status columns
-                    for idx, (status, write_to_db) in enumerate(
-                        STATUS_COLUMNS, start=9
-                    ):  # starting index from 9 as VW18 starts at index 9
+                    # starting index from 9 as VW18 starts at index 9
+                    for idx, (status, write_to_db) in enumerate(STATUS_COLUMNS, start=9):
                         value = get_status_from_db1(dataDB1, idx * 2)
                         if write_to_db:
                             update_status_in_db(cnx, cursor, status, value)
                             logging.info(
-                                f"Updated status in database for {status}: {value}"
-                            )
+                                f"Updated status in database for {status}: {value}")
 
                     # Update dataPE1 to show that we have read the data from dataDB1
                     dataPE1[0] = 1
                 else:
                     break
             time.sleep(5)
-    except KeyboardInterrupt:
-        logging.info("Received a keyboard interrupt. Shutting down gracefully...")
-        if "cnx" in locals() and cnx.is_connected():
-            cnx.close()
-        if "cursor" in locals():
-            cursor.close()
-        if "server" in locals():
-            server.stop()
-        sys.exit(0)
+    finally:
+        cursor.close()
+        cnx.close()
+        server.stop()
 
 
 # This is the entry point of the script.

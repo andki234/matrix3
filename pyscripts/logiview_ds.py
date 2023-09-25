@@ -1,3 +1,20 @@
+# LogiView Status Data Server
+# ===========================
+#
+# This script establishes a connection to a MySQL database, retrieves specified status data,
+# and sends the data to clients in JSON format over a network connection.
+#
+# The server listens for client requests on a predefined port, fetching and sending the latest
+# status data from the database upon each connection request.
+#
+# Configuration data for the columns to be queried is defined in the `STATUS_COLUMNS` list. This list
+# dictates the specific status columns to be fetched and transmitted. The second element in each tuple
+# is a boolean flag that indicates whether the column should be included in the query.
+#
+# Usage:
+#     python3 logo8_ds.py --host <MySQL server IP> -u <MySQL username> -p <MySQL password>
+#
+
 import argparse
 import setproctitle
 import logging
@@ -9,10 +26,10 @@ import io
 import mysql.connector
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.DEBUG
+LOGGING_LEVEL = logging.WARNING
 
 # Setting up process title
-setproctitle.setproctitle("logo8_ds")
+setproctitle.setproctitle("logiview_ds")
 
 # Setting up constants
 SOCKET_PORT = 45130
@@ -21,20 +38,26 @@ STATUS_COLUMNS = [("BP", True), ("PT2T1", False), ("PT1T2", False)]
 
 
 def main():
+    # Setting up the logging
+    logger = logging.getLogger('logiview_ds')
+    logger.setLevel(LOGGING_LEVEL)
+
+    # For syslog
+    syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+    syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+    syslog_handler.setFormatter(syslog_format)
+    logger.addHandler(syslog_handler)
+
+    # For console
+    console_handler = logging.StreamHandler()
+    console_format = logging.Formatter('%(levelname)s - %(message)s')
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+
     # Create an in-memory text stream to capture stderr
     captured_output = io.StringIO()
-    sys.stderr = captured_output  # Redirect stderr
-
-    # Configure logging
-    logger = logging.getLogger(__name__)
-    logger.setLevel(LOGGING_LEVEL)  # Set to DEBUG to capture all log messages
-
-    file_handler = logging.FileHandler("/tmp/test.log")
-    formatter = logging.Formatter("%(name)s: %(levelname)s %(message)s")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    logger.warning("This is a test warning message")
+    original_stderr = sys.stderr
+    sys.stderr = captured_output  # Redirect stderr to captured_output
 
     try:
         # Parse command line arguments
@@ -115,12 +138,10 @@ def main():
         logger.error(f"Error with command-line arguments: {args} {e}")
         sys.exit(1)
     except SystemExit as e:
-        # This will catch the SystemExit exception raised by argparse when arguments are missing or incorrect.
-        sys.stderr = sys.__stderr__
-        # Log the captured stderr (i.e., the error message from argparse)
-        logger.error(
-            f"Error in command line arguments: {captured_output.getvalue().strip()}"
-        )
+        sys.stderr = original_stderr  # Reset stderr to its original value
+        error_message = captured_output.getvalue().strip()
+        if error_message:  # Check if there's an error message to log
+            logger.error(f"Command line arguments error: {error_message}")
         sys.exit(1)
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
