@@ -43,7 +43,7 @@ import mysql.connector
 LOGGING_LEVEL = logging.WARNING
 
 # Setting up process title
-setproctitle.setproctitle("logiview_ds")
+setproctitle.setproctitle("logiview_sds")
 
 # Setting up constants
 SOCKET_PORT = 45130
@@ -53,7 +53,7 @@ STATUS_COLUMNS = [("BP", True), ("PT2T1", False), ("PT1T2", False)]
 
 def main():
     # Setting up the logging
-    logger = logging.getLogger('logiview_ds')
+    logger = logging.getLogger('logiview_sds')
     logger.setLevel(LOGGING_LEVEL)
 
     # For syslog
