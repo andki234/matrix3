@@ -1,9 +1,11 @@
-# LogiView Process Monitor
-# ========================
+# LogiView_pm (Process Monitor)
+# =============================
 #
+# Description:
+# -----------
 # This script continuously monitors specified Python scripts to ensure they're running. If any of the
 # monitored scripts are found not to be running, this script will start them with the predefined arguments.
-#
+
 # Each script being monitored can have a unique process title set using the setproctitle module. This
 # title is used by the monitor script to identify the process and check its running status.
 #
@@ -17,7 +19,22 @@
 # script using the setproctitle module.
 #
 # Usage:
-#     python3 logo8_pm.py
+# ------
+# To use the script, you need to provide the MySQL server's password.
+#
+# Run the script with the following format:
+#     python3 logiview_pm.py -p <PASSWORD>
+#
+# Where:
+#     <PASSWORD> is the MySQL password.
+#
+# Key Features:
+# -------------
+# 1. Continuously monitors specified Python scripts to check if they're running.
+# 2. Restarts any monitored script that stops or crashes.
+# 3. Easy to add or remove scripts from the monitoring process by simply updating the dictionary.
+# 4. Uses unique process titles for each script, set using the setproctitle module.
+# 5. Ensures titles in the `scripts_to_monitor` dictionary match with the titles set in the monitored scripts.
 #
 # Additional setup for scripts requiring privileged ports:
 # --------------------------------------------------------
@@ -38,14 +55,17 @@
 #
 # Replace `user_name` with the name of the user that will run the script (e.g., "pi").
 
-import subprocess
-import sys
-import io
-import time
-import setproctitle
-import argparse
-import logging
-import logging.handlers
+# Standard library imports
+import argparse          # Parser for command-line options and arguments
+import io                # Core tools for working with streams
+import logging           # Logging library for Python
+import logging.handlers  # Additional handlers for the logging module
+import subprocess        # To spawn new processes, connect to their input/output/error pipes
+import sys               # Access to Python interpreter variables
+import time              # Time-related functions
+
+# Third-party imports
+import setproctitle      # Allows customization of the process title
 
 # Setting up process title for the monitor script
 setproctitle.setproctitle("logiview_pm")
@@ -108,7 +128,8 @@ def main():
     try:
         # Parse command line arguments
         parser = argparse.ArgumentParser(description="Monitor and restart specified scripts.")
-        parser.add_argument('--password', required=True, help='Password to be used for the monitored scripts.')
+        parser.add_argument('-p', '--password', required=True,
+                            help='MySQL password to be used in the monitored scripts.')
         args = parser.parse_args()
 
         scripts_to_monitor = {

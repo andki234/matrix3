@@ -1,24 +1,63 @@
-# Description: This script is used to read the total kWh and peak kW values from the database and send them to the PDS via socket.
-# 8Fx5AewqQ9TmsF9oeuN4Ib0s84gXt0
+# LogiView PDS (Power Data Socket) Interface Script
+# =================================================
+#
+# Description:
+# -----------
+# This script acts as a bridge between a MySQL database and the database and the matrix display via socket communication.
+# Its primary function is to retrieve electrical data, specifically total kWh and peak kW values,
+# from the specified MySQL database. Once the data is retrieved, it is formatted into a JSON payload
+# and then forwarded to the PDS using socket communication.
+#
+# The script maintains a listening socket and awaits incoming connections from the client. When a connection
+# is established, it fetches the relevant data from the database, processes the information, and then
+# sends the JSON data over the established socket connection to the client.
+#
+# Additionally, the script has provisions for error handling, logging to syslog and console,
+# and managing its process title, allowing for easy identification in process listings.
+#
+# Usage:
+# ------
+# To use the script, you need to provide necessary command-line arguments such as the MySQL server's
+# IP address, username, and password. Proper error reporting mechanisms are in place to guide the user
+# in case of incorrect arguments or encountered issues.
+#
+# Run the script with the following format:
+#     python logiview_pds.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
+#
+# Where:
+#     <IP_ADDRESS> is the MySQL server's IP address.
+#     <USERNAME> is the MySQL server username.
+#     <PASSWORD> is the MySQL password.
+
+#
+# Key Features:
+# -------------
+# 1. Continuous socket listening for client connections on SOCKET_PORT.
+# 2. Dynamic fetching of electrical data from the MySQL database.
+# 3. JSON formatting for data consistency and easy parsing on the client side.
+# 4. Comprehensive error handling and reporting mechanisms.
+# 5. Detailed logging for troubleshooting and monitoring.
+#
 
 # Standard library imports
-import argparse
-import io
-import json
-import logging
-import logging.handlers
-import socket
-import sys
+import argparse            # Parser for command-line options and arguments
+import io                  # Core tools for working with streams
+import json                # JSON encoder and decoder
+import logging             # Logging library for Python
+import logging.handlers    # Additional handlers for the logging module
+import socket              # Low-level networking interface
+import sys                 # Access to Python interpreter variables and functions
 
 # Third-party imports
-import mysql.connector
-import setproctitle
+import mysql.connector     # MySQL database connector for Python
+import setproctitle       # Allows customization of the process title
+
 
 # Setting up process title for the monitor script
 setproctitle.setproctitle("logiview_pds")
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 
 # Setting up constants
 SOCKET_PORT = 45140

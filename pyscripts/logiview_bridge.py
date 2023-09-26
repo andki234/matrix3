@@ -1,7 +1,8 @@
-# -----------------------------------------------------------------------------
-# Siemens LOGO! 8 PLC - MySQL Bridge
+# LogiView Siemens LOGO! 8 PLC - MySQL Bridge
+# ===========================================
 #
-# Summary:
+# Description:
+# -----------
 # This script serves as an intermediary between a Siemens LOGO! 8 PLC and a MySQL database.
 # It fetches the latest temperature readings and status data from the PLC's memory and stores it in the database.
 #
@@ -25,18 +26,38 @@
 #
 # The script runs perpetually, updating the PLC's memory with the latest database temperature readings and handling PLC events.
 # Proper error handling ensures smooth operation and addresses potential issues.
+#
+# Usage:
+# ------
+# To use this script, you are required to provide the MySQL server's IP address, username, and password.
+# Additionally, you can specify the path to the Snap7 library if it's not located in a standard location.
+#
+# Run the script with the following format:
+#     python3 logiview_pm.py --host <IP_ADDRESS> -u <USERNAME> -p <PASSWORD> [-s <PATH_TO_SNAP7_LIB>]
+#
+# Where:
+#     <IP_ADDRESS> is the MySQL server's IP address.
+#     <USERNAME> is the MySQL server username.
+#     <PASSWORD> is the MySQL password.
+#     <PATH_TO_SNAP7_LIB> (optional) is the path to the Snap7 library.
+
+
 # -----------------------------------------------------------------------------
 
-import logging
-import logging.handlers
-import setproctitle
-import argparse
-import sys
-import io
-import time
-import snap7
-import mysql.connector
-from mysql.connector import errorcode
+# Standard library imports
+import argparse            # Parser for command-line options and arguments
+import io                  # Core tools for working with streams
+import logging             # Logging library for Python
+import logging.handlers    # Additional handlers for the logging module
+import sys                 # Access to Python interpreter variables
+import time                # Time-related functions
+
+# Third-party imports
+from mysql.connector import errorcode   # Specific error codes from MySQL connector
+import mysql.connector                  # MySQL database connector for Python
+import setproctitle                     # Allows customization of the process title
+import snap7                            # Python bindings for the Snap7 library, a S7 communication library
+
 
 # Set to appropriate value to enable/disabled logging
 LOGGING_LEVEL = logging.WARNING

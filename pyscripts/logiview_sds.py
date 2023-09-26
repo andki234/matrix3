@@ -1,18 +1,32 @@
-# LogiView Status Data Server
-# ===========================
+# LogiView SDS (Status Data Server) Interface Script
+# ==================================================
 #
-# This script establishes a connection to a MySQL database, retrieves specified status data (True/False)),
-# and sends the data to clients in JSON format over a network connection.
-#
-# The server listens for client requests on a predefined port, fetching and sending the latest
-# status data from the database upon each connection request.
-#
-# Configuration data for the columns to be queried is defined in the `STATUS_COLUMNS` list. This list
-# dictates the specific status columns to be fetched and transmitted. The second element in each tuple
-# is a boolean flag that indicates whether the column should be included in the query.
+# Description:
+# -----------
+# This script acts as a bridge between a MySQL database and the matrix display via socket communication.
+# Its primary function is to retrieve status data (0/1 , False/True), specified in the `STATUS_COLUMNS`
+# from the elvis MySQL database that contain the electrical power data.
+# Once the data is retrieved, it is formatted into a JSON payload  and then forwarded to the client using socket communication.
+
+# Additionally, the script has provisions for error handling, logging to syslog and console,
+# and managing its process title, allowing for easy identification in process listings.
 #
 # Usage:
-#     python3 logo8_ds.py --host <MySQL server IP> -u <MySQL username> -p <MySQL password>
+# ------
+# To use the script, you need to provide necessary command-line arguments such as the MySQL server's
+# IP address, username, and password. Proper error reporting mechanisms are in place to guide the user
+# in case of incorrect arguments or encountered issues.
+#
+# Run the script with the following format:
+#     python logiview_pds.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
+#
+# Key Features:
+# -------------
+# 1. Continuous socket listening for client connections.
+# 2. Dynamic fetching of status data from the MySQL database.
+# 3. JSON formatting for data consistency and easy parsing on the client side.
+# 4. Comprehensive error handling and reporting mechanisms.
+# 5. Detailed logging for troubleshooting and monitoring.
 #
 
 import argparse
