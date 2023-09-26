@@ -112,14 +112,20 @@ def main():
         args = parser.parse_args()
 
         scripts_to_monitor = {
-            "/home/pi/logiview/logiview_ds.py": (
-                "logiview_ds",
+            "/home/pi/logiview/logiview_sds.py": (
+                "logiview_sds",
                 ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
             ),
             "/home/pi/logiview/logiview_bridge.py": (
                 "logiview_bridge",
+                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
+                True,  # use_authbind for this script
+                True  # do not use_setsid for this script
+            ),
+            "/home/pi/logiview/logiview_pds.py": (
+                "logiview_pds",
                 ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script

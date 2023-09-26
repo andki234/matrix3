@@ -1,7 +1,7 @@
 # LogiView Status Data Server
 # ===========================
 #
-# This script establishes a connection to a MySQL database, retrieves specified status data,
+# This script establishes a connection to a MySQL database, retrieves specified status data (True/False)),
 # and sends the data to clients in JSON format over a network connection.
 #
 # The server listens for client requests on a predefined port, fetching and sending the latest
@@ -68,7 +68,6 @@ def main():
 
         args = parser.parse_args()
 
-        # Here's a demonstration of how you can utilize the parsed arguments:
         logger.info(f"Parsed command-line arguments successfully!")
         logger.info(f"Connecting to MySQL server at {args.host} with user {args.user}")
 
@@ -119,21 +118,21 @@ def main():
                             conn.send(json_str.encode())
                         else:
                             logger.warning("No data retrieved from the database.")
+
                     conn.close()
         except mysql.connector.Error as err:
             logger.error(f"Error connecting to MySQL server: {err}")
             sys.exit(1)
-
-    except KeyboardInterrupt:
-        logger.info("Received a keyboard interrupt. Shutting down gracefully...")
-        if "cnx" in locals() and cnx.is_connected():
-            cnx.close()
-        if "conn" in locals():
-            conn.close()
-        sys.exit(0)
-    except socket.error as e:
-        logger.error(f"Socket error occurred: {e}")
-        sys.exit(1)
+        except KeyboardInterrupt:
+            logger.info("Received a keyboard interrupt. Shutting down gracefully...")
+            if "cnx" in locals() and cnx.is_connected():
+                cnx.close()
+            if "conn" in locals():
+                conn.close()
+            sys.exit(0)
+        except socket.error as e:
+            logger.error(f"Socket error occurred: {e}")
+            sys.exit(1)
     except argparse.ArgumentError as e:
         logger.error(f"Error with command-line arguments: {args} {e}")
         sys.exit(1)
