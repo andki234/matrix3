@@ -1,18 +1,12 @@
-# Standard library imports
 import time
-import socket
-import json
-import gc
-
-# MicroPython specific imports
 import ntptime
 import network
+import socket
 import machine
 import utime
-
-# Third-party/module specific imports
+import json
+import gc
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
-
 
 # Initialize the Interstate75 display
 i75 = Interstate75(
@@ -312,31 +306,28 @@ def draw_water_tanks(tank_level, bp_status):
 def update_display():
     global error_counter
 
-    # Initialize error_counter if not present
     if "error_counter" not in globals():
-        error_counter = 5
+        error_counter = 0
 
-    tank_level = wifi_get_data(wlan, SERVER_IP, TANK_TEMPS_PORT, data_format="TANK_TEMPS")
+    #Need to fix error handle here. Not working on reboot!!
+
+    tank_level = wifi_get_data(
+        wlan, SERVER_IP, TANK_TEMPS_PORT, data_format="TANK_TEMPS"
+    )
     bp_status = wifi_get_data(wlan, SERVER_IP, STATUS_PORT, data_format="SYSTEM_STATUS")
-    
-    # Refreshing the graphics
-    graphics.set_pen(BLACK)
-    graphics.clear()
-    draw_energy_consumption()
-    draw_clock()
 
     if tank_level is None:
         error_counter += 1
-        print(f"Errc: {error_counter}")
-        if error_counter >= 5:  # Retry five times before showing error
+        if error_counter > 5:  # Retry five times before showing error
             draw_tank_error()
-            error_counter = 5 # Keep error counter at 5
     else:
         error_counter = 0
+        graphics.set_pen(BLACK)
+        graphics.clear()
         draw_water_tanks(tank_level, bp_status)
-
-    i75.update()
-
+        draw_energy_consumption()
+        draw_clock()
+        i75.update()
 
 def boot_display():
     text = "STARTUP!"
@@ -353,43 +344,33 @@ def boot_display():
 
 
 def main():
-    try:
-        # Set LED Red to indicate initialization
-        i75.set_led(255, 0, 0)
-        
-        # Display boot text
-        boot_display()
+    # Set LED Red
+    i75.set_led(255, 0, 0)
+    
+    # Display boot text
+    boot_display()
 
-        # Initialize RTC and Wi-Fi connection
-        wlan = wifi_connect("Happy Wifi Happy Lifi", "<TOPSECRET>")
-        set_rtc_sweden_time()
+    # Initialize RTC and Wi-Fi connection
+    wlan = wifi_connect("Happy Wifi Happy Lifi", "MoaIdaLifi#0812!")
+    set_rtc_sweden_time()
 
-        # Set LED OFF after initialization
+    # Set LED OFF
+    i75.set_led(0, 0, 0)
+
+    while True:
+        # Get tank temperature data
+        update_display()
+        if DEBUG_PRINT:
+            initial_free_memory = gc.mem_free()
+            print("Free mem:", initial_free_memory, "bytes")
+        gc.collect()  # Free memory so we dont have out of memory issues!
+        i75.set_led(0, 10, 0)
+        time.sleep(2)
         i75.set_led(0, 0, 0)
 
-        while True:
-            # Get tank temperature data
-            update_display()
-            if DEBUG_PRINT:
-                initial_free_memory = gc.mem_free()
-                print("Free mem:", initial_free_memory, "bytes")
-            gc.collect()  # Free memory to avoid out-of-memory issues
-            i75.set_led(0, 10, 0)  # Indicate data updated successfully
-            time.sleep(2)
-            i75.set_led(0, 0, 0)  # Turn LED off
-
-    except Exception as e:  
-        # Catch any general exception
-        print(f"An error occurred: {e}")
-        i75.set_led(255, 0, 0)  # Set LED Red to indicate an error
-
-    finally:
-        # This block will run regardless of whether an exception was raised or not
-        # Ensure to disconnect from Wi-Fi and deactivate the interface when exiting
-        if 'wlan' in locals():  # Check if wlan variable was defined before using it
-            wlan.disconnect()
-            wlan.active(False)
-        i75.set_led(255, 0, 0)  # Set LED Red to indicate shutdown or error
+    # Disconnect from Wi-Fi and deactivate the interface when exiting
+    wlan.disconnect()
+    wlan.active(False)
 
 
 if __name__ == "__main__":

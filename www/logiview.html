@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logiview Data Plotter</title>
+    <!-- Include CanvasJS Library -->
+    <script src="https://canvasjs.com/assets/script/canvasjs.min.js"></script>
+</head>
+<body>
+
+<!-- Input for start and end dates -->
+<form id="dateForm">
+    <label for="startDate">Start Date:</label>
+    <input type="date" id="startDate" name="startDate">
+    
+    <label for="endDate">End Date:</label>
+    <input type="date" id="endDate" name="endDate">
+
+    <button type="button" onclick="fetchAndPlotData()">Update Plot</button>
+</form>
+
+<!-- Div for CanvasJS plot -->
+<div id="dataChart" style="height: 1000px; width: 100%;"></div>
+
+<script>
+    function setDefaultDates() {
+        const endDateInput = document.getElementById('endDate');
+        const startDateInput = document.getElementById('startDate');
+    
+        const today = new Date();
+        endDateInput.value = today.toISOString().slice(0,10);
+
+        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+        startDateInput.value = weekAgo.toISOString().slice(0,10);
+    }
+
+    function fetchAndPlotData() {
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        const apiUrl = `logiviewdb.php?startDate=${startDate}&endDate=${endDate}`;
+
+        fetch(apiUrl)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (!Array.isArray(data) || !data.length) {
+                    console.error("Data received is not a valid array or is empty.");
+                    return;
+                }
+
+                const dataFields = ['t1bot', 't2bot', 't3bot', 't1mid', 't2mid', 't3mid', 't1top', 't2top', 't3top', 'tout'];
+                const chartData = dataFields.map(field => {
+                    return {
+                        type: "line",
+                        name: field.toUpperCase(),
+                        showInLegend: true,
+                        dataPoints: data.map(item => ({ x: new Date(item.ts), y: item[field] }))
+                    }
+                });
+
+                // Compute average for all except tout
+                const averageDataPoints = data.map(item => {
+                    let total = 0;
+                    for (let field of ['t1bot', 't2bot', 't3bot', 't1mid', 't2mid', 't3mid', 't1top', 't2top', 't3top']) {
+                        total += item[field];
+                    }
+                    return { x: new Date(item.ts), y: total / 9 };
+                });
+                chartData.push({
+                    type: "line",
+                    name: "AVERAGE",
+                    showInLegend: true,
+                    color: "red",          // Setting the color of the line to red
+                    lineThickness: 6,      // Making the line thicker
+                    dataPoints: averageDataPoints
+                });
+
+                const chart = new CanvasJS.Chart("dataChart", {
+                    title: {
+                        text: "Data Plotter"
+                    },
+                    axisX: {
+                        title: "Date",
+                        valueFormatString: "DD MMM YYYY",
+                        labelFontSize: 12,
+                        titleFontSize: 24
+                    },
+                    axisY: {
+                        title: "Temperature [DegC]",
+                        labelFontSize: 12,
+                        titleFontSize: 20
+                    },
+                    zoomEnabled: true,
+                    panEnabled: true,
+                    height: 1000,
+                    animationEnabled: true,
+                    data: chartData
+                });
+                
+                chart.render();
+            })
+            .catch(error => {
+                console.error('There was an error fetching the data:', error);
+            });
+    }
+
+    // Set default dates and plot data on page load
+    window.onload = function() {
+        setDefaultDates();
+        fetchAndPlotData();
+    }
+</script>
+
+</body>
+</html>
