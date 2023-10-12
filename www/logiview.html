@@ -20,6 +20,20 @@
     <button type="button" onclick="fetchAndPlotData()">Update Plot</button>
 </form>
 
+<!-- Custom controls to show/hide series -->
+<div id="controls">
+    <label><input type="checkbox" id="toggleT1TOP" checked> T1TOP</label>
+    <label><input type="checkbox" id="toggleT1MID" checked> T1MID</label>
+    <label><input type="checkbox" id="toggleT1BOT" checked> T1BOT</label>
+    <label><input type="checkbox" id="toggleT2TOP" checked> T1TOP</label>
+    <label><input type="checkbox" id="toggleT2MID" checked> T1MID</label>
+    <label><input type="checkbox" id="toggleT2BOT" checked> T1BOT</label>
+    <label><input type="checkbox" id="toggleT3TOP" checked> T1TOP</label>
+    <label><input type="checkbox" id="toggleT3MID" checked> T1MID</label>
+    <label><input type="checkbox" id="toggleT3BOT" checked> T1BOT</label>
+    <!-- Add more checkboxes for other series -->
+</div>
+
 <!-- Div for CanvasJS plot -->
 <div id="dataChart" style="height: 1000px; width: 100%;"></div>
 
@@ -53,7 +67,7 @@
                     return;
                 }
 
-                const dataFields = ['t1bot', 't2bot', 't3bot', 't1mid', 't2mid', 't3mid', 't1top', 't2top', 't3top', 'tout'];
+                const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tout'];
                 const chartData = dataFields.map(field => {
                     return {
                         type: "line",
@@ -62,15 +76,33 @@
                         dataPoints: data.map(item => ({ x: new Date(item.ts), y: item[field] }))
                     }
                 });
+                
+                // Define the weights
+                const weights = {
+                    't1bot': 0.2,
+                    't2bot': 1,
+                    't3bot': 1,
+                    't1mid': 1,
+                    't2mid': 1,
+                    't3mid': 1,
+                    't1top': 1,
+                    't2top': 1,
+                    't3top': 1
+                };
 
-                // Compute average for all except tout
+                // Compute the weighted average for all fields except tout
                 const averageDataPoints = data.map(item => {
-                    let total = 0;
-                    for (let field of ['t1bot', 't2bot', 't3bot', 't1mid', 't2mid', 't3mid', 't1top', 't2top', 't3top']) {
-                        total += item[field];
+                    let weightedTotal = 0;
+                    let weightSum = 0;
+
+                    for (let field in weights) {
+                        weightedTotal += item[field] * weights[field];
+                        weightSum += weights[field];
                     }
-                    return { x: new Date(item.ts), y: total / 9 };
+
+                    return { x: new Date(item.ts), y: weightedTotal / weightSum };
                 });
+
                 chartData.push({
                     type: "line",
                     name: "AVERAGE",
@@ -86,7 +118,7 @@
                     },
                     axisX: {
                         title: "Date",
-                        valueFormatString: "DD MMM YYYY",
+                        valueFormatString: "HH:MM YYYY-MM-DD",
                         labelFontSize: 12,
                         titleFontSize: 24
                     },
@@ -95,6 +127,15 @@
                         labelFontSize: 12,
                         titleFontSize: 20
                     },
+		    toolTip: {
+			contentFormatter: function (e) {
+			    const entry = e.entries[0];
+			    const date = entry.dataPoint.x;
+			    const formattedTime = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+			    const formattedDate = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
+			    return `${entry.dataSeries.name}: ${entry.dataPoint.y}°C at ${formattedTime} ${formattedDate}`;
+                }
+		    },
                     zoomEnabled: true,
                     panEnabled: true,
                     height: 1000,
