@@ -50,9 +50,27 @@
     }
 
     function fetchAndPlotData() {
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
-        const apiUrl = `logiviewdb.php?startDate=${startDate}&endDate=${endDate}`;
+       const startDateStr = document.getElementById('startDate').value;
+
+    // Convert endDate string to Date object
+    let endDateObj = new Date(document.getElementById('endDate').value);
+
+    // Adjust the end date to be the end of the day
+    endDateObj.setHours(23, 59, 59, 999);
+
+    // Convert back to custom formatted string for the API call
+    const adjustedEndDate = endDateObj.getFullYear() + '-' + 
+                            (endDateObj.getMonth()+1).toString().padStart(2,'0') + '-' + 
+                            endDateObj.getDate().toString().padStart(2,'0') + ' ' + 
+                            endDateObj.getHours().toString().padStart(2,'0') + ':' + 
+                            endDateObj.getMinutes().toString().padStart(2,'0') + ':' + 
+                            endDateObj.getSeconds().toString().padStart(2,'0');
+
+    const apiUrl = `logiviewdb.php?startDate=${startDateStr}&endDate=${adjustedEndDate}`;
+
+    // Log the API call to the console
+    console.log("API call:", apiUrl);
+
 
         fetch(apiUrl)
             .then(response => {
