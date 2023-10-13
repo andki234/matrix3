@@ -214,17 +214,22 @@ class Alghoritm:
         # Rule 1:
         # This rule has higher priority, so we check it first
 
-        on_r1_condition = (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000) and (temp.T1BOT >= 7000)
-        off_r1_condition = (temp.T1TOP <= 8500 or (temp.T1BOT <= 7000 and temp.T1TOP < 9050))
+        on_r1_condition = (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000 or temp.T1BOT > 8000)
+        off_r1_condition = (temp.T1TOP <= 8500 or temp.T1BOT <= 6500) and not on_r1_condition
 
         # logger statements for debugging
-        self.logger.info("RULE 1 : ")
-        self.logger.info("Activate if (T1TOP > 9000 or T2TOP > 9000 or T3TOP > 9000) and (T1BOT >= 7000)")
-        self.logger.info("Deactivate when (T1TOP <= 8500 or (T1BOT <= 7000 and T1TOP < 9050))")
+        self.logger.info("<RULE 1>")
+        self.logger.info("Activate if (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000 or temp.T1BOT > 8000)")
+        self.logger.info("Deactivate when (temp.T1TOP <= 8500 or temp.T1BOT <= 6500)) and not on_condition")
         self.logger.info("------------------------------------")
         self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        self.logger.info(f"RULE 1 ON    : {on_r1_condition}")
-        self.logger.info(f"RULE 1 OFF   : {off_r1_condition}")
+        self.logger.info(f"RULE 1 ON    : {temp.T1TOP} > 9000 or")
+        self.logger.info(f"             : {temp.T2TOP} > 9000 or")
+        self.logger.info(f"             : {temp.T3TOP} > 9000 or")
+        self.logger.info(f"             : {temp.T1BOT} > 8000) : {on_r1_condition}")
+        self.logger.info(f"RULE 1 OFF   : ({temp.T1TOP} <= 8500 or")
+        self.logger.info(f"             : {temp.T1BOT} <= 6500) and")
+        self.logger.info(f"             : ({on_r1_condition}) is {off_r1_condition}")
 
         if on_r1_condition and not status.PT1T2:
             # No on delay is used because the pump needs to be turned on immediately to prevent the boiler to overheat
@@ -234,7 +239,7 @@ class Alghoritm:
             self.pump_off_delay = PUMP_OFF_DELAY
         # Check the rule 1 OFF condition and if the pump is running
         elif (off_r1_condition and status.PT1T2):
-            self.logger.info(f"pump_running_OFF_DELAY = {self.pump_on_delay}")
+            self.logger.info(f"pump_running_OFF_DELAY = {self.pump_off_delay}")
             if self.pump_off_delay <= 0:
                 self.set_transfer_pump("PT1T2", False)
                 self.logger.info("Stopping pump based on RULE 1!")
@@ -258,34 +263,41 @@ class Alghoritm:
                 r2_off_diff_temp = 0
 
             on_r2_condition = ((temp.T1BOT - r2_on_diff_temp) > temp.T2TOP) and (temp.T1BOT >= 7000)
-            off_r2_condition = ((temp.T1BOT + r2_off_diff_temp) < temp.T2TOP)
+            off_r2_condition = ((temp.T1BOT + r2_off_diff_temp) < temp.T2TOP) and not on_r2_condition
 
             # logger statements for debugging
-            self.logger.info("RULE 2 : ")
+            self.logger.info("<RULE 2> ")
             self.logger.info(f"Activate when T1BOT - {r2_on_diff_temp}) > T2TOP and T1BOT >= 7000")
             self.logger.info(f"Deactivate when (T1BOT + {r2_off_diff_temp}) < T2TOP")
             self.logger.info("------------------------------------")
-            self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-            self.logger.info(f"RULE 1 ON    : {on_r2_condition}")
-            self.logger.info(f"RULE 1 OFF   : {off_r2_condition}")
+            self.logger.info(f"RULE 2 PT1T2 : {status.PT1T2}")
+            self.logger.info(f"RULE 2 ON    : ({temp.T1BOT - r2_on_diff_temp} >= {temp.T2TOP}) and ")
+            self.logger.info(f"             : ({temp.T1BOT} >= 7000) is {on_r2_condition}")
+            self.logger.info(f"RULE 1 OFF   : (({temp.T1BOT + r2_off_diff_temp} < {temp.T2TOP}) and")
+            self.logger.info(f"             : ({not on_r2_condition}) is {off_r2_condition}")
 
-            if (on_r2_condition and not status.PT1T2):
-                # On delay is used to minimize the number of times the pump is turned on and off
-                self.pump_off_delaylogger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
+            # Check if the condition for Rule 2 is met and if the pump for this rule is not running
+            if on_r2_condition and not status.PT1T2:
+                # On delay is utilized to prevent frequent toggling of the pump
+                self.logger.info(f"pump_running_ON_DELAY = {self.pump_on_delay}")
                 if self.pump_on_delay <= 0:
-                    self.set_transfer_pump("PT1T2", True)
-                    self.logger.info(f"Starting pump based on RULE 2!")
+                    self.set_transfer_pump("PT1T2", True)  # Start the pump
+                    self.logger.info("Starting pump based on RULE 2!")
+                    # Reset delays after pump start
                     self.pump_on_delay = PUMP_ON_DELAY
                     self.pump_off_delay = PUMP_OFF_DELAY
                 else:
                     self.pump_on_delay -= 1
-            # Check if the condition for Rule 2 is no longer met and if the pump for this rule is running
-            elif (off_r2_condition and status.PT1T2):
-                # Off delay is used to minimize the number of times the pump is turned on and off
+
+            # Check if the condition for Rule 2 is no longer satisfied and if the pump is running
+            elif off_r2_condition and status.PT1T2:
+                # Off delay is utilized to prevent frequent toggling of the pump
                 if self.pump_off_delay <= 0:
-                    self.set_transfer_pump("PT1T2", False)
+                    self.set_transfer_pump("PT1T2", False)  # Stop the pump
                     self.logger.info("Stopping pump based on RULE 2!")
+                    # Deactivate Rule 1 and reset delays after pump stop
                     self.rule_one_active = False
+                    # Reset delays after pump stop
                     self.pump_on_delay = PUMP_ON_DELAY
                     self.pump_off_delay = PUMP_OFF_DELAY
                 else:
@@ -308,9 +320,9 @@ class Alghoritm:
         self.logger.info("-------------------------------------------------------------------------------------------")
         self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
         self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) or ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1000) : {on_condition}")
+        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1000) is {on_condition}")
         self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) and ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} <= 500) : {off_condition}")
+        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} <= 500) is {off_condition}")
 
         # If it is conflicting, then the pump should be turned off
         if (on_condition == True) and (off_condition == True):

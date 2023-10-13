@@ -37,16 +37,19 @@ while ($row = $result->fetch_assoc()) {
     if ($n == 1) {
         $point = array(
             "ts" => $row['datetime'],
-            "t1bot" => floatval($row['T1BOT'])/100,
-            "t2bot" => floatval($row['T2BOT'])/100,
-            "t3bot" => floatval($row['T3BOT'])/100,
-            "t1mid" => floatval($row['T1MID'])/100,
-            "t2mid" => floatval($row['T2MID'])/100,
-            "t3mid" => floatval($row['T3MID'])/100,
-            "t1top" => floatval($row['T1TOP'])/100,
-            "t2top" => floatval($row['T2TOP'])/100,
-            "t3top" => floatval($row['T3TOP'])/100,
-            "tout" => floatval($row['TOUT'])/100
+            "t1bot" => floatval($row['T1BOT']) / 100,
+            "t2bot" => floatval($row['T2BOT']) / 100,
+            "t3bot" => floatval($row['T3BOT']) / 100,
+            "t1mid" => floatval($row['T1MID']) / 100,
+            "t2mid" => floatval($row['T2MID']) / 100,
+            "t3mid" => floatval($row['T3MID']) / 100,
+            "t1top" => floatval($row['T1TOP']) / 100,
+            "t2top" => floatval($row['T2TOP']) / 100,
+            "t3top" => floatval($row['T3TOP']) / 100,
+            "tout" => floatval($row['TOUT']) / 100,
+            "bp" => floatval($row['BP']) * 100,
+            "pt1t2" => floatval($row['PT1T2']) * 100,
+            "pt2t1" => floatval($row['PT2T1']) * 100,
         );
         array_push($data_points, $point);
         $n = 0;
