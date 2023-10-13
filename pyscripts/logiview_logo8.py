@@ -185,127 +185,132 @@ def set_transfer_pump(pump, pactive, plc_handler, logger):
 # algorithm for water transfer
 
 
-def water_transfer_algorithm(temp, status, plc_handler, logger):
-    global pump_running_OFF_DELAY
-    global pump_running_ON_DELAY
+class Alghoritm:
+    def __init__(self, plc_handler, logger):
+        try:
+            self.pump_on_delay = PUMP_ON_DELAY
+            self.pump_off_delay = PUMP_OFF_DELAY
+            self.plc_handler = plc_handler
+            self.logger = logger
+            self.rule_one_active = False
+        except Exception as e:
+            print(f"Error during initialization: {e}")
+            raise
 
-    logger.info("<><><><><><><><><><><><><><><><><><><><><><><><><><><ALOGO START><><><><><><><><><><><><><><><><><><><><><><><><><><>")
+    def execute_algorithm(self, temp, status):
+        self.logger.info("<><><><><><><><><><ALOGO EXECUTE><><><><><><><><><>")
 
-    # Check if global variables are defined, if not, initialize them
-    # This ensures the global variables exist and are properly initialized during the first function call
-    try:
-        pump_running_OFF_DELAY
-    except NameError:
-        pump_running_OFF_DELAY = PUMP_OFF_DELAY
+        if status.BP:
+            self.logger.info("Boiler is ON!")
+            self.boiler_on_algorithm(temp, status)
+        else:
+            self.logger.info("Boiler is OFF!")
+            self.boiler_off_algorithm(temp, status)
 
-    try:
-        pump_running_ON_DELAY
-    except NameError:
-        pump_running_ON_DELAY = PUMP_ON_DELAY
-
-    # Check boiler status
-    if status.BP:
-        logger.info("Boiler is on")
-        # --------------------------------------------------------------------------------
-
+    def boiler_on_algorithm(self, temp, status):
         # Turn off T2->T1 pump
-        set_transfer_pump("PT2T1", False, plc_handler, logger)
+        self.set_transfer_pump("PT2T1", False)
 
-        # Rule 1: Activate if T1TOP > 9000 and deactivate when T1TOP <= 8500
+        # Rule 1:
         # This rule has higher priority, so we check it first
 
         on_r1_condition = (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000) and (temp.T1BOT >= 7000)
         off_r1_condition = (temp.T1TOP <= 8500 or (temp.T1BOT <= 7000 and temp.T1TOP < 9050))
 
-        logger.info(
-            "RULE 1: Activate if T1TOP > 9000 and T1BOT >= 7000. Deactivate when T1TOP <= 8500 or (T1BOT <= 7000 and T1TOP < 9050)")
-        logger.info(
-            "---------------------------------------------------------------------------------------------------------------------")
-        logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        logger.info(f"RULE 1 ON    : {on_r1_condition}")
-        logger.info(f"RULE 1 OFF   : {off_r1_condition}")
+        # logger statements for debugging
+        self.logger.info("RULE 1 : ")
+        self.logger.info("Activate if (T1TOP > 9000 or T2TOP > 9000 or T3TOP > 9000) and (T1BOT >= 7000)")
+        self.logger.info("Deactivate when (T1TOP <= 8500 or (T1BOT <= 7000 and T1TOP < 9050))")
+        self.logger.info("------------------------------------")
+        self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
+        self.logger.info(f"RULE 1 ON    : {on_r1_condition}")
+        self.logger.info(f"RULE 1 OFF   : {off_r1_condition}")
 
-        # Check if the temperature T1TOP exceeds 9000 and T1BOT >= 7000 and also check if the pump for this rule isn't already running
         if on_r1_condition and not status.PT1T2:
             # No on delay is used because the pump needs to be turned on immediately to prevent the boiler to overheat
-            set_transfer_pump("PT1T2", True, plc_handler, logger)
-            logger.warning("T1TOP is over 90 degrees. Starting pump based on RULE1.")
-            pump_running_OFF_DELAY = 0  # Set off delay to 0 to disable turn off delay for this rule
+            self.set_transfer_pump("PT1T2", True)
+            self.rule_one_active = True
+            self.logger.warning("Starting pump based on RULE 1!")
+            self.pump_off_delay = PUMP_OFF_DELAY
         # Check the rule 1 OFF condition and if the pump is running
         elif (off_r1_condition and status.PT1T2):
-            logger.info(f"pump_running_OFF_DELAY = {pump_running_OFF_DELAY}")
-            if pump_running_OFF_DELAY <= 0:
-                set_transfer_pump("PT1T2", False, plc_handler, logger)
-                logger.info("T1TOP is under or equal to 85 degrees. Stopping pump based on RULE1.")
-                pump_running_ON_DELAY = PUMP_ON_DELAY
+            self.logger.info(f"pump_running_OFF_DELAY = {self.pump_on_delay}")
+            if self.pump_off_delay <= 0:
+                self.set_transfer_pump("PT1T2", False)
+                self.logger.info("Stopping pump based on RULE 1!")
+                self.rule_one_active = False
+                self.pump_on_delay = PUMP_ON_DELAY
+                self.pump_off_delay = PUMP_OFF_DELAY
             else:
-                pump_running_OFF_DELAY -= 1
+                self.pump_off_delay -= 1
 
-        # Rule 2: Activate when T1BOT- 500 > T2TOP and T1BOT >= 6000, deactivate when T1BOT < T2TOP
-        # This rule has lower priority, so it's checked after Rule 1
+        # Rule 2:
+        # This rule has lower priority, so we check that rule 1 is not active first
 
-        on_r2_condition = ((temp.T1BOT - r2_on_diff_temp) > temp.T2TOP) and (temp.T1BOT >= 7000)
-        off_r2_condition = ((temp.T1BOT + r2_off_diff_temp) < temp.T2TOP)
-
-        # Calculate the temperature difference for Rule 2.  If T1BOT is greater than 8000, use 1.00 degrees, otherwise use 5.00 degrees
-        if temp.T1BOT >= 8000:
-            r2_on_diff_temp = 50
-            r2_off_diff_temp = 100
-        else:
-            r2_on_diff_temp = 500
-            r2_off_diff_temp = 0
-
-        logger.info(
-            f"RULE 2: Activate when (T1BOT - {r2_on_diff_temp}) > T2TOP and T1BOT >= 7000, deactivate when (T1BOT + {r2_off_diff_temp}) < T2TOP")
-        logger.info(
-            "---------------------------------------------------------------------------------------------------------------------")
-        logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        logger.info(f"RULE 2 ON    : {on_r2_condition}")
-        logger.info(f"RULE 2 OFF   : {off_r2_condition}")
-
-        # Before checking Rule 2, ensure neither pump from Rule 1 nor pump from Rule 2 is running
-        # This ensures Rule 1's priority over Rule 2
-        if (on_r2_condition and not status.PT1T2):
-            # On delay is used to minimize the number of times the pump is turned on and off
-            logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
-            if pump_running_ON_DELAY <= 0:
-                set_transfer_pump("PT1T2", True, plc_handler, logger)
-                logger.warning(f"T1BOT - {r2_on_diff_temp} is greater than T2TOP. Starting pump based on RULE2.")
-                pump_running_OFF_DELAY = PUMP_OFF_DELAY
+        if (self.rule_one_active == False):
+            # Calculate the temperature difference for Rule 2.
+            # If T1BOT is greater than 8000, use 1.00 degrees, otherwise use 5.00 degrees
+            if temp.T1BOT >= 8000:
+                r2_on_diff_temp = 50
+                r2_off_diff_temp = 100
             else:
-                pump_running_ON_DELAY -= 1
-        # Check if the condition for Rule 2 is no longer met and if the pump for this rule is running
-        elif (off_r2_condition and status.PT1T2):
-            # Off delay is used to minimize the number of times the pump is turned on and off
-            logger.info(f"pump_running_OFF_DELAY = {pump_running_OFF_DELAY}")
-            if pump_running_OFF_DELAY <= 0:
-                set_transfer_pump("PT1T2", False, plc_handler, logger)
-                pump_running_ON_DELAY = PUMP_ON_DELAY
-            else:
-                pump_running_OFF_DELAY -= 1
-    else:
-        logger.info("Boiler is off")
-        # --------------------------------------------------------------------------------
+                r2_on_diff_temp = 500
+                r2_off_diff_temp = 0
+
+            on_r2_condition = ((temp.T1BOT - r2_on_diff_temp) > temp.T2TOP) and (temp.T1BOT >= 7000)
+            off_r2_condition = ((temp.T1BOT + r2_off_diff_temp) < temp.T2TOP)
+
+            # logger statements for debugging
+            self.logger.info("RULE 2 : ")
+            self.logger.info(f"Activate when T1BOT - {r2_on_diff_temp}) > T2TOP and T1BOT >= 7000")
+            self.logger.info(f"Deactivate when (T1BOT + {r2_off_diff_temp}) < T2TOP")
+            self.logger.info("------------------------------------")
+            self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
+            self.logger.info(f"RULE 1 ON    : {on_r2_condition}")
+            self.logger.info(f"RULE 1 OFF   : {off_r2_condition}")
+
+            if (on_r2_condition and not status.PT1T2):
+                # On delay is used to minimize the number of times the pump is turned on and off
+                self.pump_off_delaylogger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
+                if self.pump_on_delay <= 0:
+                    self.set_transfer_pump("PT1T2", True)
+                    self.logger.info(f"Starting pump based on RULE 2!")
+                    self.pump_on_delay = PUMP_ON_DELAY
+                    self.pump_off_delay = PUMP_OFF_DELAY
+                else:
+                    self.pump_on_delay -= 1
+            # Check if the condition for Rule 2 is no longer met and if the pump for this rule is running
+            elif (off_r2_condition and status.PT1T2):
+                # Off delay is used to minimize the number of times the pump is turned on and off
+                if self.pump_off_delay <= 0:
+                    self.set_transfer_pump("PT1T2", False)
+                    self.logger.info("Stopping pump based on RULE 2!")
+                    self.rule_one_active = False
+                    self.pump_on_delay = PUMP_ON_DELAY
+                    self.pump_off_delay = PUMP_OFF_DELAY
+                else:
+                    self.pump_off_delay -= 1
+
+    def boiler_off_algorithm(self, temp, status):
 
         # Turn off T1->T2 pump
-        set_transfer_pump("PT1T2", False, plc_handler, logger)
+        self.set_transfer_pump("PT1T2", False)
 
         # Rule 1:
-        # This rule has highest priority, so we check it first
+        # -------
 
         on_condition = ((temp.T2TOP - temp.T1MID) >= 200) or ((temp.T2MID - temp.T1BOT) >= 1000)
         off_condition = ((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500)
 
         # logger statements for debugging
-        logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1000))")
-        logger.info("Deactivate when ((T2TOP - T1MID) <= 0) and ((T2MID - T1BOT) <= 500)")
-        logger.info(
-            "---------------------------------------------------------------------------------------------------------------------")
-        logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
-        logger.info(
-            f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) or ({temp.T2MID - temp.T1BOT} >= 1000) : {on_condition}")
-        logger.info(
-            f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) and ({temp.T2MID - temp.T1BOT} <= 500) : {off_condition}")
+        self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1000))")
+        self.logger.info("Deactivate when ((T2TOP - T1MID) <= 0) and ((T2MID - T1BOT) <= 500)")
+        self.logger.info("-------------------------------------------------------------------------------------------")
+        self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
+        self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) or ")
+        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1000) : {on_condition}")
+        self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) and ")
+        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} <= 500) : {off_condition}")
 
         # If it is conflicting, then the pump should be turned off
         if (on_condition == True) and (off_condition == True):
@@ -313,16 +318,42 @@ def water_transfer_algorithm(temp, status, plc_handler, logger):
 
         # Check if the temperature (T1MID + 200) < T2TOP and if the pump for this rule isn't already running
         if on_condition and not status.PT2T1:
-            logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
+            self.logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
             if pump_running_ON_DELAY <= 0:
-                set_transfer_pump("PT2T1", True, plc_handler, logger)
+                self.set_transfer_pump("PT2T1", True)
                 pump_running_OFF_DELAY = PUMP_OFF_DELAY
                 pump_running_ON_DELAY = PUMP_ON_DELAY
             else:
                 pump_running_ON_DELAY -= 1
         # Check off condition and if the pump is running
         elif off_condition and status.PT2T1:
-            set_transfer_pump("PT2T1", False, plc_handler, logger)
+            self.logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
+            if pump_running_OFF_DELAY <= 0:
+                self.set_transfer_pump("PT2T1", False)
+                pump_running_OFF_DELAY = PUMP_OFF_DELAY
+                pump_running_ON_DELAY = PUMP_ON_DELAY
+            else:
+                pump_running_OFF_DELAY -= 1
+
+    def set_transfer_pump(self, pump, pactive):
+        try:
+            if pump == "PT2T1":
+                if pactive:
+                    self.plc_handler.write_bit("V0.0", 0, True)
+                    self.logger.info("Transfer pump T2->T1 set to on")
+                else:
+                    self.plc_handler.write_bit("V0.0", 0, False)
+                    self.logger.info("Transfer pump T2->T1 set to off")
+            elif pump == "PT1T2":
+                if pactive:
+                    self.plc_handler.write_bit("V0.1", 0, True)
+                    self.logger.info("Transfer pump T1->T2 set to on")
+                else:
+                    self.plc_handler.write_bit("V0.1", 0, False)
+                    self.logger.info("Transfer pump T1->T2 set to off")
+        except Exception as e:
+            self.logger.error(f"Error setting transfer pump: {e}")
+            raise
 
 # main function
 
@@ -384,8 +415,10 @@ def main():
             try:
                 # Adjust the IP address as needed
                 plc_handler = LogoPlcHandler('192.168.0.200')
-
                 logger.info("Successfully created a Logo8 PLC handler!")
+
+                algorithm = Alghoritm(plc_handler, logger)
+                logger.info("Successfully created algorithm object!")
 
                 while True:
                     for idx, temp_name in enumerate(TEMP_COLUMNS):
@@ -405,9 +438,9 @@ def main():
                     if status.BP:
                         update_status_in_db(cnx, cursor, "BP", status.BP)
 
-                    water_transfer_algorithm(temp, status, plc_handler, logger)
+                    algorithm.execute_algorithm(temp, status)
 
-                    time.sleep(5)
+                    time.sleep(5)  # Sleep for 5 seconds
 
             except KeyboardInterrupt:
                 logger.info("Received a keyboard interrupt. Shutting down gracefully...")
