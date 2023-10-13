@@ -108,10 +108,10 @@ def is_dst(year, month, day):
 def set_rtc_sweden_time():
     NTP_SERVER = "pool.ntp.org"
     current_utc_time = utime.time()
-    year, month, mday, hour, minute, second, weekday, yearday = utime.localtime(
-        current_utc_time
-    )
-    hour += 1  # CET is UTC+1
+    year, month, mday, hour, minute, second, weekday, yearday = utime.localtime(current_utc_time)
+    #hour += 1  # CET is UTC+1
+    
+    print(f"{NTP_SERVER} say {hour}:{minute:02}:{second:02}")
 
     if is_dst(year, month, mday):
         hour += 1  # CEST is UTC+2
@@ -290,9 +290,19 @@ def draw_energy_consumption():
         actualw = "{:4}W".format(power_data[1])
         total24kw = "{:5}".format(power_data[0])
         graphics.set_font("bitmap8")
-        graphics.set_pen(WHITE)
+        
+        # Set pen color
+        if (int(power_data[1])) < 1000:
+            graphics.set_pen(WHITE)
+        elif (int(power_data[1])) < 2500:
+            graphics.set_pen(YELLOW)
+        else:
+            graphics.set_pen(RED)
+            
         w = graphics.measure_text(actualw, 1, 1, 1)
         graphics.text(actualw, int(width / 4) - int(w / 2), 2, scale=1)
+        
+        graphics.set_pen(WHITE)
         w = graphics.measure_text(total24kw, 1, 1, 1)
         graphics.text(total24kw, int(width / 4) - int(w / 2), 12, scale=1)
 
