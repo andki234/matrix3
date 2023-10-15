@@ -239,7 +239,7 @@ class Alghoritm:
             self.pump_off_delay = PUMP_OFF_DELAY
         # Check the rule 1 OFF condition and if the pump is running
         elif (off_r1_condition and status.PT1T2):
-            self.logger.info(f"pump_running_OFF_DELAY = {self.pump_off_delay}")
+            self.logger.info(f"self.pump_off_delay = {self.pump_off_delay}")
             if self.pump_off_delay <= 0:
                 self.set_transfer_pump("PT1T2", False)
                 self.logger.info("Stopping pump based on RULE 1!")
@@ -279,7 +279,7 @@ class Alghoritm:
             # Check if the condition for Rule 2 is met and if the pump for this rule is not running
             if on_r2_condition and not status.PT1T2:
                 # On delay is utilized to prevent frequent toggling of the pump
-                self.logger.info(f"pump_running_ON_DELAY = {self.pump_on_delay}")
+                self.logger.info(f"pump_on_delay = {self.pump_on_delay}")
                 if self.pump_on_delay <= 0:
                     self.set_transfer_pump("PT1T2", True)  # Start the pump
                     self.logger.info("Starting pump based on RULE 2!")
@@ -330,22 +330,22 @@ class Alghoritm:
 
         # Check if the temperature (T1MID + 200) < T2TOP and if the pump for this rule isn't already running
         if on_condition and not status.PT2T1:
-            self.logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
-            if pump_running_ON_DELAY <= 0:
+            self.logger.info(f"pump_on_delay = {self.pump_on_delay}")
+            if self.pump_on_delay <= 0:
                 self.set_transfer_pump("PT2T1", True)
-                pump_running_OFF_DELAY = PUMP_OFF_DELAY
-                pump_running_ON_DELAY = PUMP_ON_DELAY
+                self.pump_off_delay = PUMP_OFF_DELAY
+                self.pump_on_delay = PUMP_ON_DELAY
             else:
-                pump_running_ON_DELAY -= 1
+                self.pump_on_delay -= 1
         # Check off condition and if the pump is running
         elif off_condition and status.PT2T1:
-            self.logger.info(f"pump_running_ON_DELAY = {pump_running_ON_DELAY}")
-            if pump_running_OFF_DELAY <= 0:
+            self.logger.info(f"pump_off_delay = {self.pump_off_delay}")
+            if self.pump_off_delay <= 0:
                 self.set_transfer_pump("PT2T1", False)
-                pump_running_OFF_DELAY = PUMP_OFF_DELAY
-                pump_running_ON_DELAY = PUMP_ON_DELAY
+                self.pump_off_delay = PUMP_OFF_DELAY
+                self.pump_on_delay = PUMP_ON_DELAY
             else:
-                pump_running_OFF_DELAY -= 1
+                self.pump_off_delay -= 1
 
     def set_transfer_pump(self, pump, pactive):
         try:

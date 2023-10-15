@@ -139,8 +139,8 @@ def main():
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
             ),
-            "/home/pi/logiview/logiview_bridge.py": (
-                "logiview_bridge",
+            "/home/pi/logiview/logiview_logo8.py": (
+                "logiview_logo8",
                 ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
