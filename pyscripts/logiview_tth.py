@@ -53,9 +53,9 @@ class LogiviewServer:
         self.cursorA = None
         self.cursorB = None
 
-    def setup_logging(self):
+    def setup_logging(self, logging_level=logging.WARNING):
         logger = logging.getLogger('logiview_tth')
-        logger.setLevel(LOGGING_LEVEL)
+        logger.setLevel(logging_level)
 
         syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
         syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')

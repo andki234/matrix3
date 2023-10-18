@@ -3,7 +3,7 @@
 #
 # Description:
 # -----------
-# This script acts as a bridge between a MySQL database and the database and the matrix display via socket communication.
+# This script acts as a bridge between a MySQL database and the matrix display via socket communication.
 # Its primary function is to retrieve electrical data, specifically total kWh and peak kW values,
 # from the specified MySQL database. Once the data is retrieved, it is formatted into a JSON payload
 # and then forwarded to the PDS using socket communication.

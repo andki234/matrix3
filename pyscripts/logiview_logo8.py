@@ -1,3 +1,43 @@
+# LogiView Logo8 Interface Script
+# =================================================
+#
+# Description:
+# -----------
+# This script interfaces with a Logo8 PLC, a MySQL database, and a temperature monitoring system.
+# Its primary functions include controlling transfer pumps, monitoring temperatures in multiple tanks,
+# and managing boiler operation based on defined rules.
+#
+# The script connects to the Logo8 PLC to read and write data, fetches temperature data from the MySQL database,
+# and executes an algorithm to control the operation of transfer pumps and the boiler.
+# It follows a set of rules to efficiently transfer water between tanks and maintain the boiler's safe operation.
+#
+# This script serves as a bridge between the Logo8 PLC and the MySQL database, ensuring that temperature data
+# and pump statuses are synchronized and acted upon as needed.
+#
+# Usage:
+# ------
+# To use the script, you need to provide necessary command-line arguments such as the MySQL server's
+# IP address, username, and password. Proper error reporting mechanisms are in place to guide the user
+# in case of incorrect arguments or encountered issues.
+#
+# Run the script with the following format:
+#     python logiview_logo8.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
+#
+# Where:
+#     <MYSQL_SERVER_IP> is the MySQL server's IP address.
+#     <USERNAME> is the MySQL server username.
+#     <PASSWORD> is the MySQL password.
+#
+# Key Features:
+# -------------
+# 1. Interface with Logo8 PLC for reading and writing data.
+# 2. Fetch temperature data from MySQL database for monitoring.
+# 3. Implement an algorithm to control transfer pumps and boiler operation based on defined rules.
+# 4. Efficiently transfer water between tanks while minimizing pump on/off cycles.
+# 5. Comprehensive error handling and reporting mechanisms.
+# 6. Logging functionality for troubleshooting and monitoring.
+#
+
 # Standard library imports
 import argparse            # Parser for command-line options and arguments
 import io                  # Core tools for working with streams
@@ -345,10 +385,12 @@ class Alghoritm:
         self.logger.info("Deactivate when ((T2TOP - T1MID) <= 0) and ((T2MID - T1BOT) <= 500)")
         self.logger.info("-------------------------------------------------------------------------------------------")
         self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
-        self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) or ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1500) is {on_condition}")
-        self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) and ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} <= 500) is {off_condition}")
+        self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) [{(temp.T2TOP - temp.T1MID) >= 200}] or ")
+        self.logger.info(
+            f"             : ({temp.T2MID - temp.T1BOT} >= 1500) [{(temp.T2MID - temp.T1BOT) >= 1500}] is {on_condition}")
+        self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) [{(temp.T2TOP - temp.T1MID) <= 0}] and ")
+        self.logger.info(
+            f"             : ({temp.T2MID - temp.T1BOT} <= 500) [{(temp.T2MID - temp.T1BOT) <= 500}] is {off_condition}")
 
         # If it is conflicting, then the pump should be turned off
         if (on_condition == True) and (off_condition == True):
@@ -478,7 +520,7 @@ def main():
 
                     algorithm.execute_algorithm(temp, status)
 
-                    time.sleep(5)  # Sleep for 5 seconds
+                    time.sleep(1)  # Sleep for 1 seconds
 
             except KeyboardInterrupt:
                 logger.info("Received a keyboard interrupt. Shutting down gracefully...")
