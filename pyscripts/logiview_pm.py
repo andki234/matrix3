@@ -151,6 +151,12 @@ def main():
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
             ),
+            "/home/pi/logiview/logiview_tth.py": (
+                "logiview_tth",
+                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
+                True,  # use_authbind for this script
+                True  # do not use_setsid for this script
+            ),
             # ... add more scripts with their titles, arguments, authbind necessity, and setsid usage as needed
         }
 

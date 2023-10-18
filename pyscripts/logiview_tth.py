@@ -5,7 +5,6 @@ import logging             # For logging messages
 import logging.handlers    # For additional logging handlers
 import sys                 # For accessing Python interpreter variables
 import time                # For time-related functions
-import urllib3             # For making HTTP requests
 
 # Third-party imports
 from mysql.connector import errorcode   # Specific error codes from MySQL connector
@@ -23,7 +22,7 @@ class LogiviewServer:
         self.cursorB = None
 
     def setup_logging(self):
-        logger = logging.getLogger('logiview_pm')
+        logger = logging.getLogger('logiview_tth')
         logger.setLevel(LOGGING_LEVEL)
 
         syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
@@ -69,13 +68,19 @@ class LogiviewServer:
         try:
             while True:
                 temp = ''
-                ch = ''
-                while ch != '\n':
+                start_time = time.time()
+                while True:
                     ch = self.uart.read(1)
-                    temp = temp + ch
-                data = temp.split(';')
+                    if ch == '\n':
+                        break
+                    temp += ch
+                    if time.time() - start_time > 30:  # 30 seconds timeout
+                        self.logger.error("UART read timeout occurred.")
+                        break
 
-                self.logger.info(data)
+                data = temp.strip().split(';')
+
+                self.logger.info(f"UART DATA: {data}")
 
                 DS18B20sqltxt = []
                 DHT22sqltxt = []
@@ -119,10 +124,14 @@ class LogiviewServer:
             sys.exit(1)
 
     def cleanup(self):
-        if self.uart is not None and self.uart.is_open():
-            self.uart.close()
-        if self.cnx is not None and self.cnx.is_connected():
-            self.cnx.close()
+        if self.uart is not None:
+            try:
+                self.uart.close()
+            except Exception as e:
+                self.logger.error(f"Error closing UART: {e}")
+
+            if self.cnx is not None and self.cnx.is_connected():
+                self.cnx.close()
 
 
 def main():
@@ -140,6 +149,6 @@ def main():
 
 
 if __name__ == "__main__":
-    LOGGING_LEVEL = logging.INFO
+    LOGGING_LEVEL = logging.WARNING
     setproctitle.setproctitle('logiview_tth')
     main()
