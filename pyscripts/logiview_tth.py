@@ -1,3 +1,35 @@
+# LogiView Logo8 Transfer Tank Temperatures
+# =================================================
+#
+# Description:
+# -----------
+# This Python script is designed to read temperature data from a UART and store it in a MySQL database.
+# It continuously monitors the connected UART device and extracts temperature data, which is then associated with
+# sensor information stored in the MySQL database.
+#
+# Usage:
+# ------
+# To use the script, you need to provide necessary command-line arguments such as the MySQL server's
+# IP address, username, and password. Proper error reporting mechanisms are in place to guide the user
+# in case of incorrect arguments or encountered issues.
+#
+# Run the script with the following format:
+#     python logiview_tth.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
+#
+# Where:
+#     <MYSQL_SERVER_IP> is the MySQL server's IP address.
+#     <USERNAME> is the MySQL server username.
+#     <PASSWORD> is the MySQL password.
+#
+# Key Features:
+# -------------
+# - Connects to a MySQL database to store temperature data.
+# - Reads temperature data from a UART
+# - Logs temperature readings along with timestamps in the database.
+# - Gracefully handles errors, including MySQL connection issues and UART communication timeouts.
+# - Can be customized to include additional sensors or data sources.
+#
+
 # Import necessary libraries
 import argparse            # For parsing command-line options and arguments
 import io                  # For working with streams
