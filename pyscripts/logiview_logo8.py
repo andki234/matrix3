@@ -21,8 +21,8 @@ LOGGING_LEVEL = logging.INFO
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
 # Setting up constants
-PUMP_ON_DELAY = 6  # 6 * 5 seconds = 30 seconds
-PUMP_OFF_DELAY = 12  # 12 * 5 seconds = 1 minute
+PUMP_ON_DELAY = 1    # 1 * 5 seconds = 5 seconds
+PUMP_OFF_DELAY = 24  # 24 * 5 seconds = 2 minutes
 
 # Setting up temperature columns to be sent to PLC
 # T1TOP - Temperature of top of tank 1 and starts on adress 0 and is 2 bytes long
@@ -43,7 +43,8 @@ TEMP_COLUMNS = [
     "T2BOT",
     "T3TOP",
     "T3MID",
-    "T3BOT"
+    "T3BOT",
+    "TRET"
 ]
 
 # Setting up data columns to get data from PLC and send to MySQL if set to true.
@@ -193,6 +194,9 @@ class Alghoritm:
             self.plc_handler = plc_handler
             self.logger = logger
             self.rule_one_active = False
+            self.rule_two_active = False
+            self.set_transfer_pump("PT1T2", False)
+            self.set_transfer_pump("PT2T1", False)
         except Exception as e:
             print(f"Error during initialization: {e}")
             raise
@@ -208,33 +212,54 @@ class Alghoritm:
             self.boiler_off_algorithm(temp, status)
 
     def boiler_on_algorithm(self, temp, status):
+        # The on algorithm handles the transfer of water from T1 to T2 and T2 to T3.
+        # It must ensure that the water is pumped in en efficient way to minimize pump on/offs and prevent the boiler from cooking.
+        # To do this temperatures are messured in the top, middle and bottom of the tanks and on the return pipe from the heating system.
+
+        # Rule 1: is a emergency protection rule that is always active. It is used to prevent the boiler from overheating.
+        # The boiler will cook if the return water temperature is above ? degrees. Little details are known about the boiler, so this value is set to 75 degrees.
+        # Also if T1BOT > 90 there are something wrong with the system and the pump should be turned on!
+        # It will be turned off safely by rule 2 or when the T1BOT temperature is below T3BOT temperature.
+
+        # Rule 2: is the main rule that is used to transfer water from T1 to T2 and T2 to T3 in an efficient way.
+        # Minimizig pump on/offs and running the pump as little as possible. to save energy.
+        # Best is if the return water temperature is between 50 and 65 degrees to make the mixer valve work as intended when the boiler has max power output.
+        # We need to minimize on/off so we can not only regulate on the return water temperature. We also need to regulate on the temperature difference between T1BOT and T3BOT.
+        # Pump start: TRET > 60 degrees or if T1BOT <= 58 then use TRET > T3BOT + 200
+        # Pump stop:  (T1BOT - T3BOT) <= 500 and start_condition is false
+
         # Turn off T2->T1 pump
         self.set_transfer_pump("PT2T1", False)
 
         # Rule 1:
         # This rule has higher priority, so we check it first
 
-        on_r1_condition = (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000 or temp.T1BOT > 8000)
-        off_r1_condition = (temp.T1TOP <= 8500 or temp.T1BOT <= 6500) and not on_r1_condition
+        # Set TRET limit for rule 1 as we can not cool the boiler lower than T3BOT temperature
+        if temp.T3BOT >= 7300:
+            tret_limit = temp.T3BOT + 200
+        else:
+            tret_limit = 7500
+
+        on_r1_condition = temp.T1TOP > 9000 or temp.TRET > tret_limit
+        off_r1_condition = temp.T1BOT <= temp.T3BOT and not on_r1_condition and not self.rule_two_active
 
         # logger statements for debugging
         self.logger.info("<RULE 1>")
-        self.logger.info("Activate if (temp.T1TOP > 9000 or temp.T2TOP > 9000 or temp.T3TOP > 9000 or temp.T1BOT > 8000)")
-        self.logger.info("Deactivate when (temp.T1TOP <= 8500 or temp.T1BOT <= 6500)) and not on_condition")
+        self.logger.info(f"Activate if T1TOP > 9000 or TRET > {tret_limit})")
+        self.logger.info("Deactivate when T1BOT <= T3BOT and not on_r1_condition")
         self.logger.info("------------------------------------")
         self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        self.logger.info(f"RULE 1 ON    : {temp.T1TOP} > 9000 or")
-        self.logger.info(f"             : {temp.T2TOP} > 9000 or")
-        self.logger.info(f"             : {temp.T3TOP} > 9000 or")
-        self.logger.info(f"             : {temp.T1BOT} > 8000) : {on_r1_condition}")
-        self.logger.info(f"RULE 1 OFF   : ({temp.T1TOP} <= 8500 or")
-        self.logger.info(f"             : {temp.T1BOT} <= 6500) and")
-        self.logger.info(f"             : ({on_r1_condition}) is {off_r1_condition}")
+        self.logger.info(f"RULE 1 ON    : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
+        self.logger.info(f"             : {temp.TRET} > {tret_limit}) [{temp.TRET > tret_limit}]: {on_r1_condition}")
+        self.logger.info(f"RULE 1 OFF   : ({temp.T1BOT} <= {temp.T3BOT} [{temp.T1BOT <= temp.T3BOT}] and")
+        self.logger.info(f"             : ({not on_r1_condition}) and ({not self.rule_two_active}")
+        self.logger.info(f"is {off_r1_condition}")
 
         if on_r1_condition and not status.PT1T2:
             # No on delay is used because the pump needs to be turned on immediately to prevent the boiler to overheat
             self.set_transfer_pump("PT1T2", True)
             self.rule_one_active = True
+            self.rule_two_active = False
             self.logger.warning("Starting pump based on RULE 1!")
             self.pump_off_delay = PUMP_OFF_DELAY
         # Check the rule 1 OFF condition and if the pump is running
@@ -253,27 +278,26 @@ class Alghoritm:
         # This rule has lower priority, so we check that rule 1 is not active first
 
         if (self.rule_one_active == False):
-            # Calculate the temperature difference for Rule 2.
-            # If T1BOT is greater than 8000, use 1.00 degrees, otherwise use 5.00 degrees
-            if temp.T1BOT >= 8000:
-                r2_on_diff_temp = 50
-                r2_off_diff_temp = 100
-            else:
-                r2_on_diff_temp = 500
-                r2_off_diff_temp = 0
 
-            on_r2_condition = ((temp.T1BOT - r2_on_diff_temp) > temp.T2TOP) and (temp.T1BOT >= 7000)
-            off_r2_condition = ((temp.T1BOT + r2_off_diff_temp) < temp.T2TOP) and not on_r2_condition
+            # Set TRET limit to 60 degrees or if T1BOT <= 58 degrees then use TRET > T3BOT + 200
+
+            if temp.T3BOT >= 5800:
+                tret_limit = temp.T3BOT + 200
+            else:
+                tret_limit = 6000
+
+            on_r2_condition = (temp.TRET >= tret_limit)
+            off_r2_condition = ((temp.T1BOT - temp.T3BOT) <= 500) and not on_r2_condition
 
             # logger statements for debugging
             self.logger.info("<RULE 2> ")
-            self.logger.info(f"Activate when T1BOT - {r2_on_diff_temp}) > T2TOP and T1BOT >= 7000")
-            self.logger.info(f"Deactivate when (T1BOT + {r2_off_diff_temp}) < T2TOP")
+            self.logger.info(f"Activate when TRET >= {tret_limit}")
+            self.logger.info(f"Deactivate when ((T1BOT - T3BOT) <= 500) and not on_r2_condition")
             self.logger.info("------------------------------------")
             self.logger.info(f"RULE 2 PT1T2 : {status.PT1T2}")
-            self.logger.info(f"RULE 2 ON    : ({temp.T1BOT - r2_on_diff_temp} >= {temp.T2TOP}) and ")
-            self.logger.info(f"             : ({temp.T1BOT} >= 7000) is {on_r2_condition}")
-            self.logger.info(f"RULE 1 OFF   : (({temp.T1BOT + r2_off_diff_temp} < {temp.T2TOP}) and")
+            self.logger.info(f"RULE 2 ON    : ({temp.TRET} >= {tret_limit}) [{(temp.TRET >= tret_limit)}]")
+            self.logger.info(
+                f"RULE 2 OFF   : (({temp.T1BOT - temp.T3BOT}) <= 500) [{((temp.T1BOT - temp.T3BOT) <= 500)}] and")
             self.logger.info(f"             : ({not on_r2_condition}) is {off_r2_condition}")
 
             # Check if the condition for Rule 2 is met and if the pump for this rule is not running
@@ -283,6 +307,7 @@ class Alghoritm:
                 if self.pump_on_delay <= 0:
                     self.set_transfer_pump("PT1T2", True)  # Start the pump
                     self.logger.info("Starting pump based on RULE 2!")
+                    self.rule_two_active = True
                     # Reset delays after pump start
                     self.pump_on_delay = PUMP_ON_DELAY
                     self.pump_off_delay = PUMP_OFF_DELAY
@@ -295,8 +320,9 @@ class Alghoritm:
                 if self.pump_off_delay <= 0:
                     self.set_transfer_pump("PT1T2", False)  # Stop the pump
                     self.logger.info("Stopping pump based on RULE 2!")
-                    # Deactivate Rule 1 and reset delays after pump stop
+                    # Deactivate Rule 1 and 2. Reset delays after pump stop
                     self.rule_one_active = False
+                    self.rule_two_active = False
                     # Reset delays after pump stop
                     self.pump_on_delay = PUMP_ON_DELAY
                     self.pump_off_delay = PUMP_OFF_DELAY
@@ -311,16 +337,16 @@ class Alghoritm:
         # Rule 1:
         # -------
 
-        on_condition = ((temp.T2TOP - temp.T1MID) >= 200) or ((temp.T2MID - temp.T1BOT) >= 1000)
+        on_condition = ((temp.T2TOP - temp.T1MID) >= 200) or ((temp.T2MID - temp.T1BOT) >= 1500)
         off_condition = ((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500)
 
         # logger statements for debugging
-        self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1000))")
+        self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1500))")
         self.logger.info("Deactivate when ((T2TOP - T1MID) <= 0) and ((T2MID - T1BOT) <= 500)")
         self.logger.info("-------------------------------------------------------------------------------------------")
         self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
         self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) or ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1000) is {on_condition}")
+        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1500) is {on_condition}")
         self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) and ")
         self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} <= 500) is {off_condition}")
 
