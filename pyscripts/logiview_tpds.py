@@ -86,7 +86,7 @@ class TankLevelServer:
         fields = [field_md[0] for field_md in cursor.description]
         result = [dict(zip(fields, row)) for row in cursor.fetchall()]
 
-        temps = [0.00] * len(self.TEMP_SENSORS)
+        temps = [0.00] * len(TEMP_SENSORS)
         percentage_str = [""] * 3
 
         for sensor in TEMP_SENSORS:
@@ -141,7 +141,8 @@ class TankLevelServer:
                     energy_max = 42  # Maximum energy value
                     percentage_str[0] = str(self.tank_calculator.energy_to_percentage(
                         internal_energy_kwh, energy_min, energy_max))
-                    self.logger.info(f"{internal_energy_kwh} kWh is approximately {float(percentage_str[0]):.2f}%")
+                    self.logger.info(
+                        f"TANK 1: {internal_energy_kwh} kWh is approximately {float(percentage_str[0]):.2f}%")
 
                     # Temperature of the water in °C tank 2
                     # --------------------------------------

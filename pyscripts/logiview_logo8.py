@@ -39,25 +39,28 @@
 #
 
 # Standard library imports
-import argparse            # Parser for command-line options and arguments
-import io                  # Core tools for working with streams
-import logging             # Logging library for Python
-import logging.handlers    # Additional handlers for the logging module
-import sys                 # Access to Python interpreter variables
-import time                # Time-related functions
+import argparse                 # Parser for command-line options and arguments
+import io                       # Core tools for working with streams
+import logging                  # Logging library for Python
+import logging.handlers         # Additional handlers for the logging module
+import sys                      # Access to Python interpreter variables
+import time                     # Time-related functions
+from datetime import datetime   # Date/Time-related functions
 
 # Third-party imports
 from mysql.connector import errorcode       # Specific error codes from MySQL connector
 import mysql.connector                      # MySQL database connector for Python
 import setproctitle                         # Allows customization of the process title
 import snap7                                # Python bindings for the Snap7 library, a S7 communication library
-from snap7.util import set_bool, get_bool
+from pushbullet import Pushbullet           # Using Pushbullet to send notifications to phone
+from snap7.util import set_bool, get_bool   # Snap7 com to logo8
 
 # Setting up process title
 setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
+USE_PUSHBULLET = True
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
 # Setting up constants
@@ -124,13 +127,6 @@ class Status:
 class PumpManager:
     def __init__(self):
         self.pump_running = False
-
-
-def update_status_in_db(cnx, cursor, column_name, value):
-    sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
-    cursor.execute(sql_str)
-    cnx.commit()
-    logging.info(f"Updated {column_name} with value {value} in the database")
 
 
 def get_temperature_value(cnx, cursor, column_name, logger):
@@ -433,109 +429,177 @@ class Alghoritm:
                     self.logger.info("Transfer pump T1->T2 set to off")
         except Exception as e:
             self.logger.error(f"Error setting transfer pump: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error setting transfer pump: {e}")
             raise
 
-# main function
 
+class MainClass:
+    def __init__(self):
+        try:
+            # Create logger
+            self.logger = self.setup_logging()
 
-def main():
-    # Setting up the logging
-    logger = logging.getLogger('logiview_pm')
-    logger.setLevel(LOGGING_LEVEL)
+            # Timestamp
+            self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
 
-    # For syslog
-    syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-    syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
-    syslog_handler.setFormatter(syslog_format)
-    logger.addHandler(syslog_handler)
+            # Parse command line arguments
+            parser = argparse.ArgumentParser(description="Logo8 server script")
+            parser.add_argument("--host", required=True, help="MySQL server ip address")
+            parser.add_argument("-u", "--user", required=True, help="MySQL server username")
+            parser.add_argument("-p", "--password", required=True, help="MySQL password")
+            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
+            args = parser.parse_args()
+            self.logger.info(f"Parsed command-line arguments successfully!")
 
-    # For console
-    console_handler = logging.StreamHandler()
-    console_format = logging.Formatter('%(levelname)s - %(message)s')
-    console_handler.setFormatter(console_format)
-    logger.addHandler(console_handler)
+            # Create pushbullet
+            if USE_PUSHBULLET:
+                self.pushbullet = Pushbullet(args.apikey)
+                self.pushbullet.push_note("INFO: LogiView LOGO8", f"[{self.timestamp}] logiview_logo8.py started")
 
-    # Create an in-memory text stream to capture stderr
-    captured_output = io.StringIO()
-    original_stderr = sys.stderr
-    sys.stderr = captured_output  # Redirect stderr to captured_output
-
-    # Create a Temperatures and status object
-    temp = Temperatures()
-    status = Status()
-
-    try:
-        # Parse command line arguments
-        parser = argparse.ArgumentParser(description="Logo8 server script")
-        parser.add_argument("--host", required=True, help="MySQL server ip address")
-        parser.add_argument("-u", "--user", required=True, help="MySQL server username")
-        parser.add_argument("-p", "--password", required=True, help="MySQL password")
-        parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-        args = parser.parse_args()
-        logger.info(f"Parsed command-line arguments successfully!")
+            # Create a Temperatures and status object
+            self.temp = Temperatures()
+            self.status = Status()
+        except argparse.ArgumentError as e:
+            self.logger.error(f"Error parsing command-line arguments: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8",
+                                          f"[{self.timestamp}] Error parsing command-line arguments: {e}")
+            sys.exit(1)
+        except Exception as e:
+            self.logger.error(f"Error during initialization: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8",
+                                          f"[{self.timestamp}] Error during initialization: {e}")
+            sys.exit(1)
 
         # Connect to the MySQL server
         try:
-            cnx = mysql.connector.connect(
+            self.cnx = mysql.connector.connect(
                 user=args.user,
                 password=args.password,
                 host=args.host,
                 database="logiview",  # Assuming you always connect to this database
             )
-            logger.info("Successfully connected to the MySQL server!")
+            self.logger.info("Successfully connected to the MySQL server!")
+            # Create a cursor to execute SQL statements.
+            self.cursor = self.cnx.cursor(buffered=False)
 
         except mysql.connector.Error as err:
             if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
-                logger.error("MySQL connection error: Incorrect username or password")
-        else:
-            # Create a cursor to execute SQL statements.
-            cursor = cnx.cursor(buffered=False)
+                self.logger.error("MySQL connection error: Incorrect username or password")
+                if USE_PUSHBULLET:
+                    self.pushbullet.push_note("ERROR: LogiView LOGO8",
+                                              f"[{self.timestamp}] MySQL connection error: Incorrect username or password")
 
-            # Create a Logo8 PLC handler
-            try:
-                # Adjust the IP address as needed
-                plc_handler = LogoPlcHandler('192.168.0.200')
-                logger.info("Successfully created a Logo8 PLC handler!")
+    def setup_logging(self, logging_level=logging.WARNING):
+        try:
+            # Setting up the logging
+            logger = logging.getLogger('logiview_logo8')
+            logger.setLevel(LOGGING_LEVEL)
 
-                algorithm = Alghoritm(plc_handler, logger)
-                logger.info("Successfully created algorithm object!")
+            # For syslog
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_handler.setFormatter(syslog_format)
+            logger.addHandler(syslog_handler)
 
-                while True:
-                    for idx, temp_name in enumerate(TEMP_COLUMNS):
-                        value = get_temperature_value(cnx, cursor, temp_name, logger)
-                        temp.set_temperature(temp_name, value)
+            # For console
+            console_handler = logging.StreamHandler()
+            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_handler.setFormatter(console_format)
+            logger.addHandler(console_handler)
 
-                    # Reading from virtual inputs from logo8
-                    status.set_status("BP", plc_handler.read_bit("V1.0", 0))        # Boiler pump
-                    status.set_status("PT2T1", plc_handler.read_bit("V1.1", 0))     # Transfer pump T2->T1
-                    status.set_status("PT1T2", plc_handler.read_bit("V1.2", 0))     # Transfer pump T1->T2
+            # Create an in-memory text stream to capture stderr
+            captured_output = io.StringIO()
+            self.original_stderr = sys.stderr
+            sys.stderr = captured_output  # Redirect stderr to captured_output
 
-                    # Update status in database if the status is not False
-                    if status.PT2T1:
-                        update_status_in_db(cnx, cursor, "PT2T1", status.PT2T1)
-                    if status.PT1T2:
-                        update_status_in_db(cnx, cursor, "PT1T2", status.PT1T2)
-                    if status.BP:
-                        update_status_in_db(cnx, cursor, "BP", status.BP)
+            return logger
+        except Exception as e:
+            return None
 
-                    algorithm.execute_algorithm(temp, status)
+    def update_status_in_db(self, column_name, value):
+        sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
+        self.cursor.execute(sql_str)
+        self.cnx.commit()
+        self.logger.info(f"Updated {column_name} with value {value} in the database")
 
-                    time.sleep(1)  # Sleep for 1 seconds
+    def get_temperature_value(self, column_name):
+        try:
+            sql_str = (f"SELECT {column_name} FROM logiview.tempdata order by datetime desc limit 1")
+            # Execute the SQL statement and fetch the temperature data
+            self.cursor.execute(sql_str)
+            # Fetch the all data from database
+            sqldata = self.cursor.fetchall()
+            self.logger.info(f"Retrieved value for {column_name}: {sqldata[0][0]}")
+            self.cnx.rollback()  # Need to roll back the transaction eaven is there is no error
+            return int(sqldata[0][0])
+        except mysql.connector.Error as err:
+            self.logger.error(f"Database error: {err}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"[{self.timestamp}] Database error: {err}")
+            self.cnx.rollback()  # Roll back the transaction in case of error
+            return None
 
-            except KeyboardInterrupt:
-                logger.info("Received a keyboard interrupt. Shutting down gracefully...")
-                plc_handler.disconnect()
-                if "cnx" in locals() and cnx.is_connected():
-                    cnx.close()
-                sys.exit(0)
-            except Exception as e:
-                logger.error(f"Error in main: {e}")
-    except argparse.ArgumentError as e:
-        logger.error(f"Error parsing command-line arguments: {e}")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        sys.exit(1)
+    def main_loop(self):
+        # Create a Logo8 PLC handler
+        try:
+            # Adjust the IP address as needed
+            plc_handler = LogoPlcHandler('192.168.0.200')
+            self.logger.info("Successfully created a Logo8 PLC handler!")
+
+            algorithm = Alghoritm(plc_handler, self.logger)
+            self.logger.info("Successfully created algorithm object!")
+
+            while True:
+                for idx, temp_name in enumerate(TEMP_COLUMNS):
+                    value = get_temperature_value(self.cnx, self.cursor, temp_name, self.logger)
+                    self.temp.set_temperature(temp_name, value)
+
+                # Reading from virtual inputs from logo8
+                self.status.set_status("BP", plc_handler.read_bit("V1.0", 0))        # Boiler pump
+                self.status.set_status("PT2T1", plc_handler.read_bit("V1.1", 0))     # Transfer pump T2->T1
+                self.status.set_status("PT1T2", plc_handler.read_bit("V1.2", 0))     # Transfer pump T1->T2
+
+                # Update status in database if the status is not False
+                if self.status.PT2T1:
+                    self.update_status_in_db("PT2T1", self.status.PT2T1)
+                if self.status.PT1T2:
+                    self.update_status_in_db("PT1T2", self.status.PT1T2)
+                if self.status.BP:
+                    self.update_status_in_db("BP", self.status.BP)
+
+                algorithm.execute_algorithm(self.temp, self.status)
+
+                # Update Timestamp
+                self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
+
+                time.sleep(1)  # Sleep for 1 seconds
+
+        except KeyboardInterrupt:
+            self.logger.info("Received a keyboard interrupt. Shutting down gracefully...")
+            plc_handler.disconnect()
+            if "cnx" in locals() and self.cnx.is_connected():
+                self.cnx.close()
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("INFO: LogiView LOGO8",
+                                          f"[{self.timestamp}] Received a keyboard interrupt. Shutting down gracefully...")
+            sys.exit(0)
+        except SystemExit as e:
+            sys.stderr = self.original_stderr  # Reset stderr to its original value
+            sys.exit(0)
+        except Exception as e:
+            self.logger.error(f"Error in main: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"[{self.timestamp}] Error in main: {e}")
+            sys.exit(1)
+
+
+def main():
+    main = MainClass()   # Create main class
+    main.main_loop()     # Run main loop
 
 
 if __name__ == "__main__":

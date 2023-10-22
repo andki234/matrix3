@@ -130,6 +130,7 @@ def main():
         parser = argparse.ArgumentParser(description="Monitor and restart specified scripts.")
         parser.add_argument('-p', '--password', required=True,
                             help='MySQL password to be used in the monitored scripts.')
+        parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
         args = parser.parse_args()
 
         scripts_to_monitor = {
@@ -141,7 +142,7 @@ def main():
             ),
             "/home/pi/logiview/logiview_logo8.py": (
                 "logiview_logo8",
-                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
+                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password, "--apikey", args.apikey],
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
             ),
@@ -153,7 +154,7 @@ def main():
             ),
             "/home/pi/logiview/logiview_tth.py": (
                 "logiview_tth",
-                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password],
+                ["--host", "192.168.0.240", "--user", "pi", "--password", args.password, "--apikey", args.apikey],
                 True,  # use_authbind for this script
                 True  # do not use_setsid for this script
             ),

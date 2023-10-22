@@ -31,70 +31,125 @@
 #
 
 # Import necessary libraries
-import argparse            # For parsing command-line options and arguments
-import io                  # For working with streams
-import logging             # For logging messages
-import logging.handlers    # For additional logging handlers
-import sys                 # For accessing Python interpreter variables
-import time                # For time-related functions
+import argparse                 # For parsing command-line options and arguments
+import io                       # For working with streams
+import logging                  # For logging messages
+import logging.handlers         # For additional logging handlers
+import sys                      # For accessing Python interpreter variables
+import time                     # For time-related functions
+from datetime import datetime   # Date/Time-related functions
 
 # Third-party imports
 from mysql.connector import errorcode   # Specific error codes from MySQL connector
 import mysql.connector                  # For MySQL database interaction
 import setproctitle                     # For customizing process title
+from pushbullet import Pushbullet       # Using Pushbullet to send notifications to phone
+
+# Set to appropriate value to enable/disabled logging
+LOGGING_LEVEL = logging.WARNING
+USE_PUSHBULLET = True
 
 
-class LogiviewServer:
-    def __init__(self, args):
-        self.args = args
-        self.logger = self.setup_logging()
-        self.cnx = None
-        self.uart = None
-        self.cursorA = None
-        self.cursorB = None
+class LogiviewTTHserver:
+    def __init__(self):
+        try:
+            # Init status
+            self.initialized = False
+
+            # Create logger
+            self.logger = self.setup_logging()
+
+            # Timestamp
+            self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
+
+            # Parse command line arguments
+            parser = argparse.ArgumentParser(description="Logo8 server script")
+            parser.add_argument("--host", required=True, help="MySQL server ip address")
+            parser.add_argument("-u", "--user", required=True, help="MySQL server username")
+            parser.add_argument("-p", "--password", required=True, help="MySQL password")
+            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
+            args = parser.parse_args()
+            self.logger.info(f"Parsed command-line arguments successfully!")
+
+            # Create pushbullet
+            if USE_PUSHBULLET:
+                self.pushbullet = Pushbullet(args.apikey)
+                self.pushbullet.push_note("INFO: LogiView TTH", f"[{self.timestamp}] logiview_tth.py started")
+
+            # Create globals
+            self.cnx = None
+            self.uart = None
+            self.cursorA = None
+            self.cursorB = None
+        except argparse.ArgumentError as e:
+            self.logger.error(f"Error parsing command-line arguments: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView TTH",
+                                          f"[{self.timestamp}] Error parsing command-line arguments: {e}")
+        except Exception as e:
+            self.logger.error(f"Error during initialization: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView TTH",
+                                          f"[{self.timestamp}] Error during initialization: {e}")
+        else:
+            # Connect to the MySQL server
+            try:
+                self.cnx = mysql.connector.connect(
+                    user=args.user,
+                    password=args.password,
+                    host=args.host,
+                    database="logiview",  # Assuming you always connect to this database
+                )
+                self.logger.info("Successfully connected to the MySQL server!")
+                # Create a cursor to execute SQL statements.
+                self.cursorA = self.cnx.cursor(buffered=True)
+                self.cursorB = self.cnx.cursor(buffered=False)
+
+            except mysql.connector.Error as err:
+                if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
+                    self.logger.error("MySQL connection error: Incorrect username or password")
+                    if USE_PUSHBULLET:
+                        self.pushbullet.push_note("ERROR: LogiView TTH",
+                                                  f"[{self.timestamp}] MySQL connection error: Incorrect username or password")
+            else:
+                # Connect to Serial USB-Port
+                try:
+                    self.uart = open('/dev/ttyACM0', 'r')
+                    self.logger.info(f"Opened UART: {self.uart}")
+                except IOError as e:
+                    self.logger.error(f"I/O error({e.errno}): {e.strerror}")
+                    self.pushbullet.push_note(
+                        "ERROR: LogiView TTH", f"[{self.timestamp}] Unable to open ttyACM0! I/O error({e.errno}): {e.strerror}")
+                else:
+                    self.initialized = True  # Initialized OK!
 
     def setup_logging(self, logging_level=logging.WARNING):
-        logger = logging.getLogger('logiview_tth')
-        logger.setLevel(logging_level)
-
-        syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-        syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
-        syslog_handler.setFormatter(syslog_format)
-        logger.addHandler(syslog_handler)
-
-        console_handler = logging.StreamHandler()
-        console_format = logging.Formatter('%(levelname)s - %(message)s')
-        console_handler.setFormatter(console_format)
-        logger.addHandler(console_handler)
-
-        return logger
-
-    def connect_to_mysql(self):
         try:
-            MYSQL_CONFIG = {
-                'user': self.args.user,
-                'password': self.args.password,
-                'host': self.args.host,
-                'database': 'logiview'
-            }
-            self.cnx = mysql.connector.connect(**MYSQL_CONFIG)
-            self.cursorA = self.cnx.cursor(buffered=True)
-            self.cursorB = self.cnx.cursor(buffered=False)
-            self.logger.info("Connected to MySQL server successfully")
-        except mysql.connector.Error as err:
-            if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
-                self.logger.error("MySQL connection error: Incorrect username or password")
-            else:
-                self.logger.error("MySQL connection error: %s", err)
-            sys.exit(1)
+            # Setting up the logging
+            logger = logging.getLogger('logiview_logo8')
+            logger.setLevel(LOGGING_LEVEL)
 
-    def open_uart_connection(self):
-        try:
-            self.uart = open('/dev/ttyACM1', 'r')
-            self.logger.info(f"Opened UART: {self.uart}")
-        except IOError as e:
-            self.logger.error(f"I/O error({e.errno}): {e.strerror}")
-            sys.exit(1)
+            # For syslog
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_handler.setFormatter(syslog_format)
+            logger.addHandler(syslog_handler)
+
+            # For console
+            console_handler = logging.StreamHandler()
+            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_handler.setFormatter(console_format)
+            logger.addHandler(console_handler)
+
+            # Create an in-memory text stream to capture stderr
+            captured_output = io.StringIO()
+            self.original_stderr = sys.stderr
+            sys.stderr = captured_output  # Redirect stderr to captured_output
+
+            return logger
+        except Exception as e:
+            return None
 
     def main_loop(self):
         try:
@@ -115,9 +170,11 @@ class LogiviewServer:
                 self.logger.info(f"UART DATA: {data}")
 
                 DS18B20sqltxt = []
-                DHT22sqltxt = []
 
-                datetime = time.strftime("%y-%m-%d;%H:%M:%S")
+                # Update Timestamp
+                self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
+
+                datetimes = time.strftime("%y-%m-%d;%H:%M:%S")
                 sensor_data = [(data[k], data[k - 1]) for k in range(2, len(data), 2)]
 
                 for sensor_value, sensor_name in sensor_data:
@@ -134,7 +191,7 @@ class LogiviewServer:
 
                     # Ensure that there are enough values for all columns, fill missing values with 0
                     values = [str(val) if val != ' ' else '0' for val in DS18B20sqltxt[::2]]
-                    values.insert(0, f"'{datetime}'")
+                    values.insert(0, f"'{datetimes}'")
                     values = ', '.join(values)
 
                     sqlstr = f"INSERT INTO logiview.tempdata({columns}) VALUES ({values})"
@@ -153,6 +210,7 @@ class LogiviewServer:
             self.cleanup()
         except Exception as e:
             self.logger.error(f"An unexpected error occurred: {e}")
+            self.pushbullet.push_note("ERROR: LogiView TTH", f"[{self.timestamp}] An unexpected error occurred: {e}")
             sys.exit(1)
 
     def cleanup(self):
@@ -167,20 +225,10 @@ class LogiviewServer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Logo8 server script")
-    parser.add_argument("--host", required=True, help="MySQL server ip address")
-    parser.add_argument("-u", "--user", required=True, help="MySQL server username")
-    parser.add_argument("-p", "--password", required=True, help="MySQL password")
-    parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-    args = parser.parse_args()
-
-    logiview_server = LogiviewServer(args)
-    logiview_server.connect_to_mysql()
-    logiview_server.open_uart_connection()
-    logiview_server.main_loop()
+    logiview_server = LogiviewTTHserver()   # Create TTH-Server
+    logiview_server.main_loop()             # if all ok then execute main loop
 
 
 if __name__ == "__main__":
-    LOGGING_LEVEL = logging.WARNING
     setproctitle.setproctitle('logiview_tth')
     main()
