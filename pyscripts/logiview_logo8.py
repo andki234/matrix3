@@ -374,7 +374,8 @@ class Alghoritm:
         # -------
 
         on_condition = ((temp.T2TOP - temp.T1MID) >= 200) or ((temp.T2MID - temp.T1BOT) >= 1500)
-        off_condition = ((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500)
+        off_condition = ((((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500))
+                         or (temp.T1BOT >= 7000)) and not on_condition
 
         # logger statements for debugging
         self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1500))")

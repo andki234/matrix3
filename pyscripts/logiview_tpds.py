@@ -14,7 +14,7 @@ import mysql.connector                  # For MySQL database interaction
 import setproctitle                     # For customizing process title
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 
 TEMP_SENSORS = ["T1TOP", "T1MID", "T1BOT", "T2TOP", "T2MID", "T2BOT", "T3TOP", "T3MID", "T3BOT"]
 

@@ -226,7 +226,12 @@ class LogiviewTTHserver:
 
 def main():
     logiview_server = LogiviewTTHserver()   # Create TTH-Server
-    logiview_server.main_loop()             # if all ok then execute main loop
+    if logiview_server.initialized:
+        logiview_server.main_loop()             # if all ok then execute main loop
+    else:
+        logiview_server.pushbullet.push_note(
+            "ERROR: LogiView TTH", f"[{logiview_server.timestamp}] Initialize failed. Server not started!")
+        logiview_server.logger.error("Initialize failed. Server not started!")
 
 
 if __name__ == "__main__":
