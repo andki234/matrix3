@@ -78,7 +78,7 @@ USE_PUSHBULLET = True
 
 
 class PushBullet:
-    def __init__(self, enabled, apikey, name):
+    def __init__(self, enabled, logger, apikey, name):
         try:
             self.enabled = enabled  # True to enable messages to be sent
             self.initialized = False  # Init status
@@ -88,7 +88,7 @@ class PushBullet:
             if enabled:
                 self.pushbullet = Pushbullet(apikey)
         except Exception as e:
-            self.logger.error(f"Error during pushbullet object initialization: {e}")
+            logger.error(f"Error during pushbullet object initialization: {e}")
         else:
             self.initialized = True
 
@@ -98,14 +98,14 @@ class PushBullet:
                 self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Time stamp
                 self.pushbullet.push_note(f"{level}: {self.name}", f"[{self.timestamp}] {str}")
             except Exception as e:
-                self.logger.error(f"Pushbullet error: {e}")
+                logger.error(f"Pushbullet error: {e}")
         else:
             pass
 
     def send_info(self, str):
         self.push("INFO", str)
 
-    def send_waring(self, str):
+    def send_warning(self, str):
         self.push("WARNING", str)
 
     def send_error(self, str):
@@ -131,13 +131,12 @@ class LogiviewPMserver:
             self.logger.info("Parsed command-line arguments successfully!")
 
             # Create Pushbullet
-            self.pushbullet = PushBullet(USE_PUSHBULLET, self.args.apikey, "Logiview PM")
+            self.pushbullet = PushBullet(USE_PUSHBULLET, logger, self.args.apikey, "Logiview PM")
 
             self.pushbullet.info("logiview_pm.py started")
         except argparse.ArgumentError as e:
             self.logger.error(f"Error parsing command-line arguments: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.error(f"Error parsing command-line arguments: {e}")
+            self.pushbullet.error(f"Error parsing command-line arguments: {e}")
         except Exception as e:
             self.logger.error(f"Error during initialization: {e}")
             self.pushbullet.error(f"Error during initialization: {e}")
