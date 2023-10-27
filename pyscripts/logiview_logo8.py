@@ -91,16 +91,14 @@ TEMP_COLUMNS = [
 ]
 
 # Setting up data columns to get data from PLC and send to MySQL if set to true.
-# VW18  - Not used and starts on adress 18 and is 2 bytes long
-# BP    - Is 1 if boiler pump is on and 0 if boiler pump is off and starts on adress 20 and is 2 bytes long
-# VW22  - Not used and starts on adress 22 and is 2 bytes long
-# VW24  - Not used and starts on adress 24 and is 2 bytes long
-# PT2T1 - Is 1 if pump T2->T1 is on and 0 if pump T2-T1 is off and starts on adress 26 and is 2 bytes long
-# PT1T2 - Is 1 if pump T1->T2 is on and 0 if pump T1-T2 is off and starts on adress 28 and is 2 bytes long
+# BP    - Boiler pump is active
+# PT2T1 - Pump water from tank 3 to 1
+# PT1T2 - Pump water from tank 1 to 3
 STATUS_COLUMNS = [
     ("BP", True),
     ("PT2T1", True),
-    ("PT1T2", True)
+    ("PT1T2", True),
+    ("WDT", False)
 ]
 
 
@@ -370,6 +368,10 @@ class Alghoritm:
         # Turn off T1->T2 pump
         self.set_transfer_pump("PT1T2", False)
 
+        # Check watch dog timer
+        if status.WDT:
+            self.logger.warning("WDT triggered!!")
+
         # Rule 1:
         # -------
 
@@ -379,7 +381,8 @@ class Alghoritm:
 
         # logger statements for debugging
         self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 200) or ((T2MID - T1BOT) >= 1500))")
-        self.logger.info("Deactivate when ((T2TOP - T1MID) <= 0) and ((T2MID - T1BOT) <= 500)")
+        self.logger.info(
+            "Deactivate when ((((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500)) or (temp.T1BOT >= 7000)) and not on_condition")
         self.logger.info("-------------------------------------------------------------------------------------------")
         self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
         self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 200) [{(temp.T2TOP - temp.T1MID) >= 200}] or ")

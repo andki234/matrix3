@@ -127,8 +127,8 @@ class LogiviewTTHserver:
     def setup_logging(self, logging_level=logging.WARNING):
         try:
             # Setting up the logging
-            logger = logging.getLogger('logiview_logo8')
-            logger.setLevel(LOGGING_LEVEL)
+            logger = logging.getLogger('logiview_tth')
+            logger.setLevel(logging_level)
 
             # For syslog
             syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')

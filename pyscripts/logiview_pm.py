@@ -73,8 +73,43 @@ from pushbullet import Pushbullet   # Using Pushbullet to send notifications to 
 setproctitle.setproctitle("logiview_pm")
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.WARNING
+LOGGING_LEVEL = logging.INFO
 USE_PUSHBULLET = True
+
+
+class PushBullet:
+    def __init__(self, enabled, apikey, name):
+        try:
+            self.enabled = enabled  # True to enable messages to be sent
+            self.initialized = False  # Init status
+            self.name = name  # Name to use in reports
+
+            # Create Pushbullet object
+            if enabled:
+                self.pushbullet = Pushbullet(apikey)
+        except Exception as e:
+            self.logger.error(f"Error during pushbullet object initialization: {e}")
+        else:
+            self.initialized = True
+
+    def push(self, level, str):
+        if "self.pushbullet" in locals():
+            try:
+                self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Time stamp
+                self.pushbullet.push_note(f"{level}: {self.name}", f"[{self.timestamp}] {str}")
+            except Exception as e:
+                self.logger.error(f"Pushbullet error: {e}")
+        else:
+            pass
+
+    def send_info(self, str):
+        self.push("INFO", str)
+
+    def send_waring(self, str):
+        self.push("WARNING", str)
+
+    def send_error(self, str):
+        self.push("ERROR", str)
 
 
 class LogiviewPMserver:
@@ -84,37 +119,57 @@ class LogiviewPMserver:
             self.initialized = False
 
             # Create logger
-            self.logger = self.setup_logging()
-
-            # Timestamp
-            self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
+            self.logger = self.setup_logging(LOGGING_LEVEL)
 
             # Parse command line arguments
-            parser = argparse.ArgumentParser(description="Logo8 server script")
-            parser.add_argument("--host", required=True, help="MySQL server ip address")
-            parser.add_argument("-u", "--user", required=True, help="MySQL server username")
+            parser = argparse.ArgumentParser(description="Logiview process monitor script")
+            parser.add_argument("--host", required=False, help="MySQL server ip address", default="192.168.0.240")
+            parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
             parser.add_argument("-p", "--password", required=True, help="MySQL password")
             parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
             self.args = parser.parse_args()
-            self.logger.info(f"Parsed command-line arguments successfully!")
+            self.logger.info("Parsed command-line arguments successfully!")
 
-            # Create pushbullet
-            if USE_PUSHBULLET:
-                self.pushbullet = Pushbullet(self.args.apikey)
-                self.pushbullet.push_note("INFO: LogiView PM", f"[{self.timestamp}] logiview_pm.py started")
+            # Create Pushbullet
+            self.pushbullet = PushBullet(USE_PUSHBULLET, self.args.apikey, "Logiview PM")
 
+            self.pushbullet.info("logiview_pm.py started")
         except argparse.ArgumentError as e:
             self.logger.error(f"Error parsing command-line arguments: {e}")
             if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView PM",
-                                          f"[{self.timestamp}] Error parsing command-line arguments: {e}")
+                self.pushbullet.error(f"Error parsing command-line arguments: {e}")
         except Exception as e:
             self.logger.error(f"Error during initialization: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView PM",
-                                          f"[{self.timestamp}] Error during initialization: {e}")
+            self.pushbullet.error(f"Error during initialization: {e}")
         else:
             self.initialized = True
+
+    def setup_logging(self, logging_level=logging.WARNING):
+        try:
+            # Setting up the logging
+            logger = logging.getLogger('logiview_pm')
+            logger.setLevel(logging_level)
+
+            # For syslog
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_handler.setFormatter(syslog_format)
+            logger.addHandler(syslog_handler)
+
+            # For console
+            console_handler = logging.StreamHandler()
+            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_handler.setFormatter(console_format)
+            logger.addHandler(console_handler)
+
+            # Create an in-memory text stream to capture stderr
+            captured_output = io.StringIO()
+            self.original_stderr = sys.stderr
+            sys.stderr = captured_output  # Redirect stderr to captured_output
+
+            return logger
+        except Exception as e:
+            return None
 
     def mask_password(self):
         # Mask the password in the arguments list.
@@ -183,20 +238,29 @@ class LogiviewPMserver:
 
             while True:
                 self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Update timestamp
-                self.check_and_start(logger, scripts_to_monitor)
+                self.check_and_start(scripts_to_monitor)
                 time.sleep(28)  # Sleep for 28 seconds
 
         except KeyboardInterrupt:
             self.logger.info("Received a keyboard interrupt. Shutting down gracefully...")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("INFO: LogiView PM",
+                                          f"[{self.timestamp}] Received a keyboard interrupt. Shutting down gracefully...")
             sys.exit(0)
         except SystemExit as e:
             sys.stderr = self.original_stderr  # Reset stderr to its original value
             error_message = self.captured_output.getvalue().strip()
             if error_message:  # Check if there's an error message to log
                 self.logger.error(f"Command line arguments error: {error_message}")
+                if USE_PUSHBULLET:
+                    self.pushbullet.push_note("ERROR: LogiView PM",
+                                              f"[{self.timestamp}] Command line arguments error: {error_message}")
             sys.exit(1)
         except Exception as e:
             self.logger.error(f"An unexpected error occurred: {e}")
+            if USE_PUSHBULLET:
+                self.pushbullet.push_note("ERROR: LogiView PM",
+                                          f"[{self.timestamp}] An unexpected error occurred: {e}")
             sys.exit(1)
 
 
