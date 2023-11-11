@@ -130,7 +130,7 @@ class LogiviewPMserver:
             self.args = parser.parse_args()
             self.logger.info("Parsed command-line arguments successfully!")
 
-            # Create Pushbullet
+            # Create Pushbullet object
             self.pushbullet = PushBullet(USE_PUSHBULLET, logger, self.args.apikey, "Logiview PM")
 
             self.pushbullet.info("logiview_pm.py started")

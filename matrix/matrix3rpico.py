@@ -304,7 +304,7 @@ def draw_energy_consumption():
         
         graphics.set_pen(WHITE)
         w = graphics.measure_text(total24kw, 1, 1, 1)
-        graphics.text(total24kw, int(width / 4) - int(w / 2), 12, scale=1)
+        graphics.text(total24kw, int(width / 4) - int(w / 2), 13, scale=1)
 
 
 def draw_water_tanks(tank_level, bp_status):
@@ -314,30 +314,22 @@ def draw_water_tanks(tank_level, bp_status):
 
 
 def update_display():
-    global error_counter
-
-    if "error_counter" not in globals():
-        error_counter = 0
-
-    #Need to fix error handle here. Not working on reboot!!
-
-    tank_level = wifi_get_data(
-        wlan, SERVER_IP, TANK_TEMPS_PORT, data_format="TANK_TEMPS"
-    )
+    tank_level = wifi_get_data(wlan, SERVER_IP, TANK_TEMPS_PORT, data_format="TANK_TEMPS")
     bp_status = wifi_get_data(wlan, SERVER_IP, STATUS_PORT, data_format="SYSTEM_STATUS")
+    
+    graphics.set_pen(BLACK)
+    graphics.clear()
 
     if tank_level is None:
-        error_counter += 1
-        if error_counter > 5:  # Retry five times before showing error
-            draw_tank_error()
+        draw_tank_error()
     else:
-        error_counter = 0
-        graphics.set_pen(BLACK)
-        graphics.clear()
         draw_water_tanks(tank_level, bp_status)
-        draw_energy_consumption()
-        draw_clock()
-        i75.update()
+        error_counter = 0
+        
+    draw_energy_consumption()
+    draw_clock()
+    
+    i75.update()
 
 def boot_display():
     text = "STARTUP!"
