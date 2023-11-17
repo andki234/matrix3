@@ -64,8 +64,8 @@ class LogiviewTTHserver:
 
             # Parse command line arguments
             parser = argparse.ArgumentParser(description="Logo8 server script")
-            parser.add_argument("--host", required=True, help="MySQL server ip address")
-            parser.add_argument("-u", "--user", required=True, help="MySQL server username")
+            parser.add_argument("--host", required=False, help="MySQL server ip address", default="192.168.0.240")
+            parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
             parser.add_argument("-p", "--password", required=True, help="MySQL password")
             parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
             parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")

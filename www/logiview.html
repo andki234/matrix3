@@ -33,6 +33,7 @@
         <label><input type="checkbox" id="toggleT3TOP" checked> T1TOP</label>
         <label><input type="checkbox" id="toggleT3MID" checked> T1MID</label>
         <label><input type="checkbox" id="toggleT3BOT" checked> T1BOT</label>
+        <label><input type="checkbox" id="toggleT3BOT" checked> TBTOP</label>
         <!-- Add more checkboxes for other series -->
     </div>
 
@@ -87,7 +88,7 @@
                         return;
                     }
 
-                    const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tout', 'bp', 'pt1t2', 'pt2t1'];
+                    const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tbtop', 'tret', 'bp', 'pt1t2', 'pt2t1'];
                     const chartData = dataFields.map(field => {
                         return {
                             type: "line",

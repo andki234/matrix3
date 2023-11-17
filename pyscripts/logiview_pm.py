@@ -133,7 +133,7 @@ class LogiviewPMserver:
             # Create Pushbullet object
             self.pushbullet = PushBullet(USE_PUSHBULLET, logger, self.args.apikey, "Logiview PM")
 
-            self.pushbullet.info("logiview_pm.py started")
+            self.pushbullet.send_info("logiview_pm.py started")
         except argparse.ArgumentError as e:
             self.logger.error(f"Error parsing command-line arguments: {e}")
             self.pushbullet.error(f"Error parsing command-line arguments: {e}")
@@ -195,7 +195,8 @@ class LogiviewPMserver:
                 # If use_setsid is True, then use setsid to run the process in its own session
                 cmd = ['setsid'] + cmd if use_setsid else cmd
                 subprocess.Popen(cmd)
-                self.logger.info(f"{title} has been started with arguments: {' '.join(self.mask_password(self.args))}")
+                self.logger.info(f"{title} has been started with arguments: {' '.join(self.mask_password())}")
+
 
     def main_loop(self):
         try:
@@ -228,6 +229,12 @@ class LogiviewPMserver:
                 ),
                 "/home/pi/logiview/logiview_tpds.py": (
                     "logiview_tpds",
+                    ["--host", "192.168.0.240", "--user", "pi", "--password", self.args.password],
+                    False,  # do not use_authbind for this script
+                    True  # do not use_setsid for this script
+                ),
+                 "/home/pi/logiview/logiview_envds.py": (
+                    "logiview_envds",
                     ["--host", "192.168.0.240", "--user", "pi", "--password", self.args.password],
                     False,  # do not use_authbind for this script
                     True  # do not use_setsid for this script

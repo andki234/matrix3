@@ -59,7 +59,7 @@ from snap7.util import set_bool, get_bool   # Snap7 com to logo8
 setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.WARNING
+LOGGING_LEVEL = logging.INFO
 USE_PUSHBULLET = True
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
@@ -87,7 +87,8 @@ TEMP_COLUMNS = [
     "T3TOP",
     "T3MID",
     "T3BOT",
-    "TRET"
+    "TRET",
+    "TBTOP"
 ]
 
 # Setting up data columns to get data from PLC and send to MySQL if set to true.
@@ -251,7 +252,7 @@ class Alghoritm:
         # To do this temperatures are messured in the top, middle and bottom of the tanks and on the return pipe from the heating system.
 
         # Rule 1: is a emergency protection rule that is always active. It is used to prevent the boiler from overheating.
-        # The boiler will cook if the return water temperature is above ? degrees. Little details are known about the boiler, so this value is set to 75 degrees.
+        # The boiler will cook if the return water temperature is above ? degrees. Little details are known about the boiler so we use 85 degress for TBTOP.
         # Also if T1BOT > 90 there are something wrong with the system and the pump should be turned on!
         # It will be turned off safely by rule 2 or when the T1BOT temperature is below T3BOT temperature.
 
@@ -268,22 +269,26 @@ class Alghoritm:
         # Rule 1:
         # This rule has higher priority, so we check it first
 
+        # TBTOP Is about 2degC to low as refered to the boiler messured value.
+        temp.TBTOP += 200
+
         # Set TRET limit for rule 1 as we can not cool the boiler lower than T3BOT temperature
         if temp.T3BOT >= 7300:
             tret_limit = temp.T3BOT + 200
         else:
             tret_limit = 7500
 
-        on_r1_condition = temp.T1TOP > 9000 or temp.TRET > tret_limit
+        on_r1_condition = temp.TBTOP > 8500 or temp.T1TOP > 9000 or temp.TRET > tret_limit
         off_r1_condition = temp.T1BOT <= temp.T3BOT and not on_r1_condition and not self.rule_two_active
 
         # logger statements for debugging
         self.logger.info("<RULE 1>")
-        self.logger.info(f"Activate if T1TOP > 9000 or TRET > {tret_limit})")
+        self.logger.info(f"Activate if TBTOP > 8500 or T1TOP > 9000 or TRET > {tret_limit})")
         self.logger.info("Deactivate when T1BOT <= T3BOT and not on_r1_condition")
         self.logger.info("------------------------------------")
         self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        self.logger.info(f"RULE 1 ON    : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
+        self.logger.info(f"RULE 1 ON    : ({temp.TBTOP} > 8500 [{temp.T1TOP > 8500}] or")
+        self.logger.info(f"             : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
         self.logger.info(f"             : {temp.TRET} > {tret_limit}) [{temp.TRET > tret_limit}]: {on_r1_condition}")
         self.logger.info(f"RULE 1 OFF   : ({temp.T1BOT} <= {temp.T3BOT} [{temp.T1BOT <= temp.T3BOT}] and")
         self.logger.info(f"             : ({not on_r1_condition}) and ({not self.rule_two_active}")

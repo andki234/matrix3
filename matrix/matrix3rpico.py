@@ -23,6 +23,7 @@ BLACK = graphics.create_pen(0, 0, 0)
 WHITE = graphics.create_pen(150, 150, 150)
 GREEN = graphics.create_pen(0, 200, 0)
 RED = graphics.create_pen(200, 0, 0)
+RED2 = graphics.create_pen(100, 50, 50)
 BLUE = graphics.create_pen(0, 0, 200)
 YELLOW = graphics.create_pen(200, 200, 0)
 
@@ -231,7 +232,7 @@ def draw_tank_outline(tank_no, status):
     elif status == 0:
         graphics.set_pen(WHITE)
     elif status == 1:
-        graphics.set_pen(RED)
+        graphics.set_pen(RED2)
     else:
         # Handle unsupported status values here (optional)
         graphics.set_pen(WHITE)
@@ -286,7 +287,7 @@ def draw_energy_consumption():
         return
     else:
         if DEBUG_PRINT:
-            print(power_data)
+            print(f"Power data : {power_data}")
         actualw = "{:4}W".format(power_data[1])
         total24kw = "{:5}".format(power_data[0])
         graphics.set_font("bitmap8")
@@ -316,14 +317,14 @@ def draw_water_tanks(tank_level, bp_status):
 def update_display():
     tank_level = wifi_get_data(wlan, SERVER_IP, TANK_TEMPS_PORT, data_format="TANK_TEMPS")
     bp_status = wifi_get_data(wlan, SERVER_IP, STATUS_PORT, data_format="SYSTEM_STATUS")
-    
+        
     graphics.set_pen(BLACK)
     graphics.clear()
 
     if tank_level is None:
         draw_tank_error()
     else:
-        draw_water_tanks(tank_level, bp_status)
+        draw_water_tanks(tank_level, bp_status[0])
         error_counter = 0
         
     draw_energy_consumption()
@@ -367,7 +368,7 @@ def main():
             print("Free mem:", initial_free_memory, "bytes")
         gc.collect()  # Free memory so we dont have out of memory issues!
         i75.set_led(0, 10, 0)
-        time.sleep(2)
+        time.sleep(5)
         i75.set_led(0, 0, 0)
 
     # Disconnect from Wi-Fi and deactivate the interface when exiting

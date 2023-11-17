@@ -46,10 +46,11 @@ while ($row = $result->fetch_assoc()) {
             "t1top" => floatval($row['T1TOP']) / 100,
             "t2top" => floatval($row['T2TOP']) / 100,
             "t3top" => floatval($row['T3TOP']) / 100,
+            "tbtop" => floatval($row['TBTOP']) / 100,
             "tout" => floatval($row['TOUT']) / 100,
-            "bp" => floatval($row['BP']) * 100,
-            "pt1t2" => floatval($row['PT1T2']) * 100,
-            "pt2t1" => floatval($row['PT2T1']) * 100,
+            "bp" => floatval($row['BP']) * 30,
+            "pt1t2" => floatval($row['PT1T2']) * 20,
+            "pt2t1" => floatval($row['PT2T1']) * 10,
         );
         array_push($data_points, $point);
         $n = 0;
