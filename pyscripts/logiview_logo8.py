@@ -59,8 +59,8 @@ from snap7.util import set_bool, get_bool   # Snap7 com to logo8
 setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.INFO
-USE_PUSHBULLET = True
+LOGGING_LEVEL = logging.WARNING
+USE_PUSHBULLET = False
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
 # Setting up constants
@@ -442,40 +442,30 @@ class Alghoritm:
                 self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error setting transfer pump: {e}")
             raise
 
-
 class MainClass:
     def __init__(self):
         try:
-            # Create logger
             self.logger = self.setup_logging()
+            if self.logger is None:
+                sys.exit(1)  
+            
 
             # Timestamp
             self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
 
-            # Parse command line arguments
-            parser = argparse.ArgumentParser(description="Logo8 server script")
-            parser.add_argument("--host", required=True, help="MySQL server ip address")
-            parser.add_argument("-u", "--user", required=True, help="MySQL server username")
-            parser.add_argument("-p", "--password", required=True, help="MySQL password")
-            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
-            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-            args = parser.parse_args()
-            self.logger.info(f"Parsed command-line arguments successfully!")
-
-            # Create pushbullet
+             # Create pushbullet
             if USE_PUSHBULLET:
                 self.pushbullet = Pushbullet(args.apikey)
                 self.pushbullet.push_note("INFO: LogiView LOGO8", f"[{self.timestamp}] logiview_logo8.py started")
-
+            
+            args = self.parse_input_args()
+           
+            self.logger.info(f"INFO: LogiView LOGO8 [{self.timestamp}] logiview_logo8.py started")
+ 
             # Create a Temperatures and status object
             self.temp = Temperatures()
             self.status = Status()
-        except argparse.ArgumentError as e:
-            self.logger.error(f"Error parsing command-line arguments: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8",
-                                          f"[{self.timestamp}] Error parsing command-line arguments: {e}")
-            sys.exit(1)
+       
         except Exception as e:
             self.logger.error(f"Error during initialization: {e}")
             if USE_PUSHBULLET:
@@ -502,7 +492,7 @@ class MainClass:
                     self.pushbullet.push_note("ERROR: LogiView LOGO8",
                                               f"[{self.timestamp}] MySQL connection error: Incorrect username or password")
 
-    def setup_logging(self, logging_level=logging.WARNING):
+    def setup_logging(self):
         try:
             # Setting up the logging
             logger = logging.getLogger('logiview_logo8')
@@ -523,11 +513,36 @@ class MainClass:
             # Create an in-memory text stream to capture stderr
             captured_output = io.StringIO()
             self.original_stderr = sys.stderr
-            sys.stderr = captured_output  # Redirect stderr to captured_output
+            #sys.stderr = captured_output  # Redirect stderr to captured_output
 
             return logger
+
         except Exception as e:
+            # Log the error using print or any other means, as logging may not be set up yet
+            print(f"Error setting up logging: {type(e).__name__} - {e}")
             return None
+
+
+    def parse_input_args(self):
+        try:
+            parser = argparse.ArgumentParser(description="Logo8 server script")
+            parser.add_argument("--host", required=False, help="MySQL server ip address", default="192.168.0.240")
+            parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
+            parser.add_argument("-p", "--password", required=True, help="MySQL password")
+            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
+
+            # Set exit_on_error=False to prevent sys.exit() on error
+            args = parser.parse_args()
+
+            print(f"Parsed command-line arguments successfully!")
+            return args
+        except SystemExit as e:
+            # Handle the parsing error without terminating the program
+            inargs, _ = parser.parse_known_args()
+            error_message = f"Error parsing arguments {inargs}: {type(e).__name__} - {e}\r\n"
+            #self.logger.error(error_message)
+            sys.exit(1)  # or handle the error and exit with an appropriate status code
 
     def update_status_in_db(self, column_name, value):
         sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
