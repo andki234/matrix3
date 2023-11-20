@@ -170,17 +170,17 @@ class LogiviewPMserver:
         except Exception as e:
             return None
 
-    def mask_password(self):
+    def mask_password(self, args):
         # Mask the password in the arguments list.
         # Returns a new list with the password replaced by '<hidden>'.
-        masked_args = self.args[:]
+        masked_args = args[:]
         try:
             password_index = masked_args.index("--password") + 1
             if password_index < len(masked_args):
                 masked_args[password_index] = "<hidden>"
         except ValueError:
-            pass  # "--password" not found in args
-        return masked_args
+            return ' '.join(self.args[:])  # "--password" not found in args
+        return ' '.join(masked_args)
 
     def check_and_start(self, scripts_with_titles):
         for script, (title, args, use_authbind, use_setsid) in scripts_with_titles.items():
@@ -192,10 +192,11 @@ class LogiviewPMserver:
                 # The script is not running, so start it with its associated arguments.
                 self.logger.warning(f"{title} is not running. Starting it...")
                 cmd = ["authbind", "python3", script] + args if use_authbind else ["python3", script] + args
+                print(f"{cmd}\r\n")
                 # If use_setsid is True, then use setsid to run the process in its own session
                 cmd = ['setsid'] + cmd if use_setsid else cmd
                 subprocess.Popen(cmd)
-                self.logger.info(f"{title} has been started with arguments: {' '.join(self.mask_password())}")
+                self.logger.info(f"{title} has been started as: {self.mask_password(cmd)}")
 
 
     def main_loop(self):

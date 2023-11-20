@@ -541,7 +541,7 @@ class MainClass:
             # Handle the parsing error without terminating the program
             inargs, _ = parser.parse_known_args()
             error_message = f"Error parsing arguments {inargs}: {type(e).__name__} - {e}\r\n"
-            #self.logger.error(error_message)
+            self.logger.error(error_message)
             sys.exit(1)  # or handle the error and exit with an appropriate status code
 
     def update_status_in_db(self, column_name, value):
