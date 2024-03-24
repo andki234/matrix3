@@ -24,16 +24,23 @@
 
     <!-- Custom controls to show/hide series -->
     <div id="controls">
+        <button type="button" onclick="setAllCheckboxes()">Set All</button>
+        <button type="button" onclick="clearAllCheckboxes()">Clear All</button>
         <label><input type="checkbox" id="toggleT1TOP" checked> T1TOP</label>
         <label><input type="checkbox" id="toggleT1MID" checked> T1MID</label>
         <label><input type="checkbox" id="toggleT1BOT" checked> T1BOT</label>
-        <label><input type="checkbox" id="toggleT2TOP" checked> T1TOP</label>
-        <label><input type="checkbox" id="toggleT2MID" checked> T1MID</label>
-        <label><input type="checkbox" id="toggleT2BOT" checked> T1BOT</label>
-        <label><input type="checkbox" id="toggleT3TOP" checked> T1TOP</label>
-        <label><input type="checkbox" id="toggleT3MID" checked> T1MID</label>
-        <label><input type="checkbox" id="toggleT3BOT" checked> T1BOT</label>
-        <label><input type="checkbox" id="toggleT3BOT" checked> TBTOP</label>
+        <label><input type="checkbox" id="toggleT2TOP" checked> T2TOP</label>
+        <label><input type="checkbox" id="toggleT2MID" checked> T2MID</label>
+        <label><input type="checkbox" id="toggleT2BOT" checked> T2BOT</label>
+        <label><input type="checkbox" id="toggleT3TOP" checked> T3TOP</label>
+        <label><input type="checkbox" id="toggleT3MID" checked> T3MID</label>
+        <label><input type="checkbox" id="toggleT3BOT" checked> T3BOT</label>
+        <label><input type="checkbox" id="toggleTB" checked> TB</label>
+        <label><input type="checkbox" id="toggleTRET" checked> TRET</label>
+        <label><input type="checkbox" id="toggleBP" checked> BP</label>
+        <label><input type="checkbox" id="toggleTOUT" checked> TOUT</label>
+        <label><input type="checkbox" id="togglePT1T2" checked> PT1T2</label>
+        <label><input type="checkbox" id="togglePT2T1" checked> PT2T1</label>
         <!-- Add more checkboxes for other series -->
     </div>
 
@@ -52,7 +59,36 @@
             startDateInput.value = weekAgo.toISOString().slice(0, 10);
         }
 
+        function setAllCheckboxes() {
+            const checkboxes = document.querySelectorAll('#controls input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = true);
+        }
+        
+        function clearAllCheckboxes() {
+            const checkboxes = document.querySelectorAll('#controls input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+        }
+
         function fetchAndPlotData() {
+            // Get the checkbox elements
+            const t1topCheckbox = document.getElementById('toggleT1TOP');
+            const t1midCheckbox = document.getElementById('toggleT1MID');
+            const t1botCheckbox = document.getElementById('toggleT1BOT');
+            const t2topCheckbox = document.getElementById('toggleT2TOP');
+            const t2midCheckbox = document.getElementById('toggleT2MID');
+            const t2botCheckbox = document.getElementById('toggleT2BOT');
+            const t3topCheckbox = document.getElementById('toggleT3TOP');
+            const t3midCheckbox = document.getElementById('toggleT3MID');
+            const t3botCheckbox = document.getElementById('toggleT3BOT');
+            const tbtopCheckbox = document.getElementById('toggleTB');
+            const tretCheckbox  = document.getElementById('toggleTRET');
+            const bpCheckbox    = document.getElementById('toggleBP');
+            const toutCheckbox  = document.getElementById('toggleTOUT');
+            const pt1t2Checkbox = document.getElementById('togglePT1T2');
+            const pt2t1Checkbox = document.getElementById('togglePT2T1');
+
+            // ... add more for other series
+
             const startDateStr = document.getElementById('startDate').value;
 
             // Convert endDate string to Date object
@@ -87,16 +123,34 @@
                         console.error("Data received is not a valid array or is empty.");
                         return;
                     }
-
-                    const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tbtop', 'tret', 'bp', 'pt1t2', 'pt2t1'];
+                    // Define the data fields to plot
+                    const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tbtop', 'tret', 'bp', 'tout', 'pt1t2', 'pt2t1'];
                     const chartData = dataFields.map(field => {
-                        return {
-                            type: "line",
-                            name: field.toUpperCase(),
-                            showInLegend: true,
-                            dataPoints: data.map(item => ({ x: new Date(item.ts), y: item[field] }))
+                        // Only add the data series if the corresponding checkbox is checked
+                        if ((field === 't1top' && t1topCheckbox.checked) ||
+                            (field === 't1mid' && t1midCheckbox.checked) ||
+                            (field === 't1bot' && t1botCheckbox.checked) ||
+                            (field === 't2top' && t2topCheckbox.checked) ||
+                            (field === 't2mid' && t2midCheckbox.checked) ||
+                            (field === 't2bot' && t2botCheckbox.checked) ||
+                            (field === 't3top' && t3topCheckbox.checked) ||
+                            (field === 't3mid' && t3midCheckbox.checked) ||
+                            (field === 't3bot' && t3botCheckbox.checked) ||
+                            (field === 'tbtop' && tbtopCheckbox.checked) ||
+                            (field === 'tret' && tretCheckbox.checked) ||
+                            (field === 'bp' && bpCheckbox.checked) ||
+                            (field === 'tout' && toutCheckbox.checked) ||
+                            (field === 'pt1t2' && pt1t2Checkbox.checked) ||
+                            (field === 'pt2t1' && pt2t1Checkbox.checked)) {
+                            // ... add more for other series
+                            return {
+                                type: "line",
+                                name: field.toUpperCase(),
+                                showInLegend: true,
+                                dataPoints: data.map(item => ({ x: new Date(item.ts), y: item[field] }))
+                            }
                         }
-                    });
+                    }).filter(Boolean);  // Filter out any undefined values
 
                     // Define the weights
                     const weights = {
