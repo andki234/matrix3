@@ -73,7 +73,7 @@ from pushbullet import Pushbullet   # Using Pushbullet to send notifications to 
 setproctitle.setproctitle("logiview_pm")
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = True
 
 

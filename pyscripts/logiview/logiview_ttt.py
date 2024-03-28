@@ -34,6 +34,7 @@
 import argparse                 # For parsing command-line options and arguments
 import io                       # For working with streams
 import socket                   # For network-related functions
+import requests                 # For sending HTTP requests
 import logging                  # For logging messages
 import logging.handlers         # For additional logging handlers
 import sys                      # For accessing Python interpreter variables
@@ -49,45 +50,21 @@ from pushbullet import Pushbullet       # Using Pushbullet to send notifications
 
 # Set to appropriate value to enable/disabled logging
 LOGGING_LEVEL = logging.DEBUG
-USE_PUSHBULLET = False
+USE_PUSHBULLET = True
 
 
 class LogiviewTTHserver:
-    def __init__(self):
+    def __init__(self, logger, args, pushbullet, data_socket):
         try:
-            # Init status
-            self.initialized = False
-            
-            # Create logger
-            self.logger = self.setup_logging(logging_level = LOGGING_LEVEL)
-            self.logger.debug("Logger initialized successfully")
-            
-            # Timestamp
-            self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
-
-            # Parse command line arguments
-            parser = argparse.ArgumentParser(description="Logo8 server script")
-            parser.add_argument("-mh", "--host", required=False, help="MySQL server ip address", default="192.168.0.240")
-            parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
-            parser.add_argument("-dh", "--datahost", required=False, help="Data host ip address", default="192.168.162")
-            parser.add_argument("-dp", "--dataport", required=False, help="Data host port", default = 18999)    
-            parser.add_argument("-p", "--password", required=True, help="MySQL password")
-            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
-            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-                
-            try:
-                args = parser.parse_args()
-            except SystemExit:
-                error_message = sys.stderr.getvalue().strip()
-                self.logger.error(f"Error during parsing: {error_message}")
-                sys.exit(1)
-                   
-            self.logger.debug("Parsed command-line arguments successfully!")
+            self.initialized = False  # Init status
+            self.logger = logger  # Set logger
+            self.sock = data_socket.sock  # Set socket
+            self.starttime = datetime.now().strftime("%y-%m-%d %H:%M")  # Timestamp
             
             # Create pushbullet
-            if USE_PUSHBULLET:
-                self.pushbullet = Pushbullet(args.apikey)
-                self.pushbullet.push_note("INFO: LogiView TTT", f"[{self.timestamp}] logiview_ttt.py started")
+            self.pushbullet = pushbullet
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("INFO: LogiView TTT", f"logiview_ttt.py started")
 
             # Create globals
             self.cnx = None
@@ -97,14 +74,14 @@ class LogiviewTTHserver:
         except argparse.ArgumentError as e:
             print(e)
             self.logger.error(f"Error parsing command-line arguments: {e}")
-            if USE_PUSHBULLET:
+            if self.pushbullet is not None:
                 self.pushbullet.push_note("ERROR: LogiView TTH",
-                                          f"[{self.timestamp}] Error parsing command-line arguments: {e}")
+                                          f"Error parsing command-line arguments: {e}")
         except Exception as e:
             self.logger.error(f"Error during initialization: {e}")
-            if USE_PUSHBULLET:
+            if self.pushbullet is not None:
                 self.pushbullet.push_note("ERROR: LogiView TTH",
-                                          f"[{self.timestamp}] Error during initialization: {e}")
+                                          f"Error during initialization: {e}")
         else:
             # Connect to the MySQL server
             try:
@@ -122,66 +99,11 @@ class LogiviewTTHserver:
             except mysql.connector.Error as err:
                 if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
                     self.logger.error("MySQL connection error: Incorrect username or password")
-                    if USE_PUSHBULLET:
-                        self.pushbullet.push_note("ERROR: LogiView TTH",
-                                                  f"[{self.timestamp}] MySQL connection error: Incorrect username or password")
+                    if self.pushbullet is not None:
+                        self.pushbullet.push_note("ERROR: LogiView TTH", f"MySQL connection error: Incorrect username or password")
             else:
-                # Connect to Serial USB-Port
-                try:
-                    # Connect to socket
-                    self.sock = self.connect_to_socket(args.datahost, args.dataport)
-                    if self.sock is not None:
-                        self.logger.info(f"Opened socket to {args.datahost}")
-                except IOError as e:
-                    self.logger.error(f"I/O error({e.errno}): {e.strerror}")
-                    if USE_PUSHBULLET:
-                        self.pushbullet.push_note("ERROR: LogiView TTH", f"[{self.timestamp}] Unable to open ttyACM0! I/O error({e.errno}): {e.strerror}")
-                else:
-                    self.initialized = True  # Initialized OK!
-                    
-    def connect_to_socket(self, ip, port):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((ip, port))
-            return sock
-        except socket.error as e:
-            self.logger.error(f"Socket error: {str(e)}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView TTH", f"[{self.timestamp}] Socket connection error: {str(e)}")
-            return None
-        
-    def receive_data(self):
-        data = self.sock.recv(1024)
-        json_data = json.loads(data.decode())
-        return json_data
-
-    def setup_logging(self, logging_level=logging.WARNING):
-        try:
-            # Setting up the logging
-            logger = logging.getLogger('logiview_ttt')
-            logger.setLevel(logging_level)
-
-            # For syslog
-            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
-            syslog_handler.setFormatter(syslog_format)
-            logger.addHandler(syslog_handler)
-
-            # For console
-            console_handler = logging.StreamHandler()
-            console_format = logging.Formatter('%(levelname)s - %(message)s')
-            console_handler.setFormatter(console_format)
-            logger.addHandler(console_handler)
-
-            # Create an in-memory text stream to capture stderr
-            captured_output = io.StringIO()
-            self.original_stderr = sys.stderr
-            sys.stderr = captured_output  # Redirect stderr to captured_output
-
-            return logger
-        except Exception as e:
-            return None
-
+                self.initialized = True  # Initialized OK!
+                        
     def main_loop(self):
         try:
             while True:
@@ -251,34 +173,221 @@ class LogiviewTTHserver:
             self.cleanup()
         except Exception as e:
             self.logger.error(f"An unexpected error occurred: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView TTH", f"[{self.timestamp}] An unexpected error occurred: {e}")
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView TTH", f"An unexpected error occurred: {e}")
             sys.exit(1)
 
     def cleanup(self):
-        if self.uart is not None:
+        if self.sock is not None:
             try:
-                self.uart.close()
+                self.sock.close()
             except Exception as e:
                 self.logger.error(f"Error closing UART: {e}")
 
             if self.cnx is not None and self.cnx.is_connected():
-                self.cnx.close()
+                self.cnx.close()        
+
+# Logger class for handling logging
+class LoggerClass:
+    def __init__(self, logging_level=logging.WARNING):
+        self.logger = self.setup_logging(logging_level = logging_level)
+        # Expose logging functions
+        self.debug = self.logger.debug
+        self.info = self.logger.info
+        self.warning = self.logger.warning
+        self.error = self.logger.error
+        self.critical = self.logger.critical
+        self.logger.debug("Logger initialized successfully")
+        
+    def setup_logging(self, logging_level=logging.WARNING):
+        try:
+            # Setting up the logging
+            logger = logging.getLogger('logiview_ttt')
+            logger.setLevel(logging_level)
+
+            # For syslog
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_handler.setFormatter(syslog_format)
+            logger.addHandler(syslog_handler)
+
+            # For console
+            console_handler = logging.StreamHandler()
+            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_handler.setFormatter(console_format)
+            logger.addHandler(console_handler)
+
+            # Create an in-memory text stream to capture stderr
+            captured_output = io.StringIO()
+            self.original_stderr = sys.stderr
+            sys.stderr = captured_output  # Redirect stderr to captured_output
+
+            return logger
+        except Exception as e:
+            return None
+        
+# DataSocketClass for handling socket connections
+class DataSocketClass:
+    def __init__(self, logger, parser, pushbullet, host, port):
+        self.host = host
+        self.port = port
+        self.sock = None
+        self.logger = logger
+        self.pushbullet = pushbullet
+        self.logger.debug("Socket initialized successfully")
+        
+    def connect_to_socket(self, ip, port):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, port))
+            return sock
+        except socket.error as e:
+            self.logger.error(f"Socket error: {str(e)}")
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView TTH", f"Socket connection error: {str(e)}")
+            return None
 
 
+    def connect(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.host, self.port))
+            self.logger.info("Socket connected successfully")
+        except Exception as e:
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView TTH", f"Socket connection error: {str(e)}")
+            self.logger.error(f"Failed to connect to socket: {e}")
+            
+    def receive_data(self):
+        max_retries = 5
+        while True:
+            try:
+                data = self.sock.recv(1024)
+                if max_retries == 0:
+                    self.logger.error("Max retries reached. Closing socket.")
+                    self.close_socket()
+                    sys.exit(1)
+                else:
+                    max_retries -= 1
+                if not data:
+                    self.logger.error("No data received from socket")
+                    self.reconnect()  # Reconnect if socket is closed
+                    continue
+                else:
+                    self.logger.debug(f"Received data from socket: {data}")
+                    json_data = json.loads(data.decode())
+                    return json_data
+            except Exception as e:
+                self.logger.error(f"Error receiving data from socket: {e}")
+                self.reconnect()  # Reconnect if an error occurs
+                continue
+
+    def reconnect(self):
+        self.close_socket()
+        self.connect()
+
+    def close_socket(self):
+        if self.sock:
+            self.sock.close()
+            self.logger.info("Socket closed")
+
+    def __del__(self):
+        self.close_socket()
+    
+# Pushbullet class for sending notifications 
+class Pushbullet:
+    def __init__(self, logger, api_key):
+        self.api_key = api_key
+        self.logger = logger
+
+    def push_note(self, title, body):
+        # Add timestamp to title
+        timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Timestamp
+        titlemsg = f"{title} [{timestamp}]"
+        
+        url = "https://api.pushbullet.com/v2/pushes"
+        headers = {
+            "Access-Token": self.api_key,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "type": "note",
+            "title": titlemsg,
+            "body": body
+        }
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            self.logger.debug(f"Notification sent successfully: {titlemsg} {body}")
+        else:
+            self.logger.error(f"Failed to send notification: {titlemsg} {body}")
+            
+class Parser:
+    def __init__(self,logger):
+        self.logger = logger
+        self.parser = argparse.ArgumentParser(description="Logo8 server script")
+        self.add_arguments()
+        
+    def add_arguments(self):
+        self.parser.add_argument("-mh", "--host", required=False, help="MySQL server ip address", default="192.168.0.240")
+        self.parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
+        self.parser.add_argument("-dh", "--datahost", required=False, help="Data host ip address", default="192.168.162")
+        self.parser.add_argument("-dp", "--dataport", required=False, help="Data host port", default=18999)
+        self.parser.add_argument("-p", "--password", required=True, help="MySQL password")
+        self.parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+        self.parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
+
+    def parse(self):
+        try:
+            parsed_args = self.parser.parse_args()
+        except SystemExit:
+            error_message = sys.stderr.getvalue().strip()
+            self.logger.error(f"Error during parsing: {error_message}")
+            sys.exit(1)
+                   
+        self.logger.debug("Parsed command-line arguments successfully!")
+                
+        # Set parsed arguments as class attributes
+        self.host = parsed_args.host
+        self.user = parsed_args.user
+        self.datahost = parsed_args.datahost
+        self.dataport = parsed_args.dataport
+        self.password = parsed_args.password
+        self.apikey = parsed_args.apikey
+        self.snap7_lib = parsed_args.snap7_lib
+        
 def main():
     try:
-        logiview_server = LogiviewTTHserver()   # Create TTH-Server
-        if logiview_server.initialized:
-            logiview_server.main_loop()             # if all ok then execute main loop
+        # Create logger
+        logger = LoggerClass(logging_level = LOGGING_LEVEL)
+        
+        # Parse command-line arguments
+        parser = Parser(logger)
+        parser.parse()
+    
+        # Create Pushbullet instance
+        if USE_PUSHBULLET:
+            pushbullet = Pushbullet(logger, parser.apikey)
         else:
-            logiview_server.pushbullet.push_note(
-                "ERROR: LogiView TTH", f"[{logiview_server.timestamp}] Initialize failed. Server not started!")
-            logiview_server.logger.error("Initialize failed. Server not started!")
+            pushbullet = None
+        
+        # Create data socket and connect
+        data_socket = DataSocketClass(logger, parser, pushbullet, host='192.168.162', port=18999)
+        data_socket.connect()
+        
+        # If datasocket is connected, create LogiviewTTHserver object
+        if data_socket.sock:        
+            logiview_server= LogiviewTTHserver(logger, parser, pushbullet, data_socket)   # Create TTH-Server
+            if logiview_server.initialized:
+                logiview_server.main_loop()             # if all ok then execute main loop
+        else:
+            if pushbullet is not None:
+                pushbullet.push_note("ERROR: LogiView TTH", f"Initialize failed. Server not started!")
+            logger.error("Initialize failed. Server not started!")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
-
+        
 
 if __name__ == "__main__":
     setproctitle.setproctitle('logiview_ttt')

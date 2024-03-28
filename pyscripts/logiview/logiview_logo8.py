@@ -59,7 +59,7 @@ from snap7.util import set_bool, get_bool   # Snap7 com to logo8
 setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = False
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
@@ -237,13 +237,13 @@ class Alghoritm:
             raise
 
     def execute_algorithm(self, temp, status):
-        self.logger.info("<><><><><><><><><><ALOGO EXECUTE><><><><><><><><><>")
+        self.logger.debug("<><><><><><><><><><ALOGO EXECUTE><><><><><><><><><>")
 
         if status.BP:
-            self.logger.info("Boiler is ON!")
+            self.logger.debug("Boiler is ON!")
             self.boiler_on_algorithm(temp, status)
         else:
-            self.logger.info("Boiler is OFF!")
+            self.logger.debug("Boiler is OFF!")
             self.boiler_off_algorithm(temp, status)
 
     def boiler_on_algorithm(self, temp, status):
@@ -273,20 +273,20 @@ class Alghoritm:
         temp.TBTOP += 200
 
         on_r1_condition = temp.TBTOP >= 8500 or temp.T1TOP >= 9000 or temp.TRET >= 6800
-        off_r1_condition = temp.TRET <= 6300 and not on_r1_condition
+        off_r1_condition = (temp.TRET <= 6300 or temp.TBTOP < 8000) and not on_r1_condition
         
         # logger statements for debugging
-        self.logger.info("<RULE 1>")
-        self.logger.info(f"Activate if TBTOP > 8500 or T1TOP > 9000 or TRET >= 6800")
-        self.logger.info("Deactivate when TRET <= 6500 and not on_r1_condition")
-        self.logger.info("------------------------------------")
-        self.logger.info(f"RULE 1 PT1T2 : {status.PT1T2}")
-        self.logger.info(f"RULE 1 ON    : ({temp.TBTOP} > 8500 [{temp.TBTOP > 8500}] or")
-        self.logger.info(f"             : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
-        self.logger.info(f"             : {temp.TRET} >= 6800) [{temp.TRET > 6800}]: {on_r1_condition}")
-        self.logger.info(f"RULE 1 OFF   : ({temp.TRET} <= 6500 [{temp.TRET <= 65000}] and")
-        self.logger.info(f"             : ({not on_r1_condition})")
-        self.logger.info(f"is {off_r1_condition}")
+        self.logger.debug("<RULE 1>")
+        self.logger.debug(f"Activate if TBTOP > 8200 or T1TOP > 9000 or TRET >= 6500")
+        self.logger.debug("Deactivate when (TRET <= 6500 or TBTOP < 8000) and not on_r1_condition")
+        self.logger.debug("------------------------------------")
+        self.logger.debug(f"RULE 1 PT1T2 : {status.PT1T2}")
+        self.logger.debug(f"RULE 1 ON    : ({temp.TBTOP} > 8200 [{temp.TBTOP > 8200}] or")
+        self.logger.debug(f"             : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
+        self.logger.debug(f"             : {temp.TRET} >= 6500) [{temp.TRET > 6500}]: {on_r1_condition}")
+        self.logger.debug(f"RULE 1 OFF   : (({temp.TRET} <= 6300 [{temp.TRET <= 6500}] or {temp.TBTOP} < 8000 [{temp.TOP < 8000}]) and")
+        self.logger.debug(f"             : ({not on_r1_condition})")
+        self.logger.debug(f"is {off_r1_condition}")
 
         if on_r1_condition and not status.PT1T2:
             # No on delay is used because the pump needs to be turned on immediately to prevent the boiler to overheat
@@ -297,10 +297,10 @@ class Alghoritm:
             self.pump_off_delay = PUMP_OFF_DELAY
         # Check the rule 1 OFF condition and if the pump is running
         elif (off_r1_condition and status.PT1T2):
-            self.logger.info(f"self.pump_off_delay = {self.pump_off_delay}")
+            self.logger.debug(f"self.pump_off_delay = {self.pump_off_delay}")
             if self.pump_off_delay <= 0:
                 self.set_transfer_pump("PT1T2", False)
-                self.logger.info("Stopping pump based on RULE 1!")
+                self.logger.debug("Stopping pump based on RULE 1!")
                 self.rule_one_active = False
                 self.pump_on_delay = PUMP_ON_DELAY
                 self.pump_off_delay = PUMP_OFF_DELAY
@@ -326,15 +326,15 @@ class Alghoritm:
         on_condition = ((((temp.T2TOP - temp.T1MID) >= 300) or ((temp.T2MID - temp.T1BOT) >= 1500)) and (temp.T1BOT < 4500)) and not off_condition
 
         # logger statements for debugging
-        self.logger.info("RULE 1: Activate if (((T2TOP - T1MID) >= 300) or ((T2MID - T1BOT) >= 1500))")
-        self.logger.info(
+        self.logger.debug("RULE 1: Activate if (((T2TOP - T1MID) >= 300) or ((T2MID - T1BOT) >= 1500))")
+        self.logger.debug(
             "Deactivate when ((((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500)) or (temp.T1BOT >= 7000)) and not on_condition")
-        self.logger.info("-------------------------------------------------------------------------------------------")
-        self.logger.info(f"RULE 1 PT2T1 : {status.PT2T1}")
-        self.logger.info(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 300) [{(temp.T2TOP - temp.T1MID) >= 300}] or ")
-        self.logger.info(f"             : ({temp.T2MID - temp.T1BOT} >= 1500) [{(temp.T2MID - temp.T1BOT) >= 1500}] is {on_condition}")
-        self.logger.info(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) [{(temp.T2TOP - temp.T1MID) <= 0}] and ")
-        self.logger.info(
+        self.logger.debug("-------------------------------------------------------------------------------------------")
+        self.logger.debug(f"RULE 1 PT2T1 : {status.PT2T1}")
+        self.logger.debug(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 300) [{(temp.T2TOP - temp.T1MID) >= 300}] or ")
+        self.logger.debug(f"             : ({temp.T2MID - temp.T1BOT} >= 1500) [{(temp.T2MID - temp.T1BOT) >= 1500}] is {on_condition}")
+        self.logger.debug(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) [{(temp.T2TOP - temp.T1MID) <= 0}] and ")
+        self.logger.debug(
             f"             : ({temp.T2MID - temp.T1BOT} <= 500) [{(temp.T2MID - temp.T1BOT) <= 500}] is {off_condition}")
 
         # If it is conflicting, then the pump should be turned off
@@ -343,7 +343,7 @@ class Alghoritm:
 
         # Check if the temperature (T1MID + 200) < T2TOP and if the pump for this rule isn't already running
         if on_condition and not status.PT2T1:
-            self.logger.info(f"pump_on_delay = {self.pump_on_delay}")
+            self.logger.debug(f"pump_on_delay = {self.pump_on_delay}")
             if self.pump_on_delay <= 0:
                 self.set_transfer_pump("PT2T1", True)
                 self.pump_off_delay = PUMP_OFF_DELAY
@@ -352,7 +352,7 @@ class Alghoritm:
                 self.pump_on_delay -= 1
         # Check off condition and if the pump is running
         elif off_condition and status.PT2T1:
-            self.logger.info(f"pump_off_delay = {self.pump_off_delay}")
+            self.logger.debug(f"pump_off_delay = {self.pump_off_delay}")
             if self.pump_off_delay <= 0:
                 self.set_transfer_pump("PT2T1", False)
                 self.pump_off_delay = PUMP_OFF_DELAY
@@ -365,17 +365,17 @@ class Alghoritm:
             if pump == "PT2T1":
                 if pactive:
                     self.plc_handler.write_bit("V0.0", 0, True)
-                    self.logger.info("Transfer pump T2->T1 set to on")
+                    self.logger.debug("Transfer pump T2->T1 set to on")
                 else:
                     self.plc_handler.write_bit("V0.0", 0, False)
-                    self.logger.info("Transfer pump T2->T1 set to off")
+                    self.logger.debug("Transfer pump T2->T1 set to off")
             elif pump == "PT1T2":
                 if pactive:
                     self.plc_handler.write_bit("V0.1", 0, True)
-                    self.logger.info("Transfer pump T1->T2 set to on")
+                    self.logger.debug("Transfer pump T1->T2 set to on")
                 else:
                     self.plc_handler.write_bit("V0.1", 0, False)
-                    self.logger.info("Transfer pump T1->T2 set to off")
+                    self.logger.debug("Transfer pump T1->T2 set to off")
         except Exception as e:
             self.logger.error(f"Error setting transfer pump: {e}")
             if USE_PUSHBULLET:
@@ -488,7 +488,7 @@ class MainClass:
         sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
         self.cursor.execute(sql_str)
         self.cnx.commit()
-        self.logger.info(f"Updated {column_name} with value {value} in the database")
+        self.logger.debug(f"Updated {column_name} with value {value} in the database")
 
     def get_temperature_value(self, column_name):
         try:
@@ -497,7 +497,7 @@ class MainClass:
             self.cursor.execute(sql_str)
             # Fetch the all data from database
             sqldata = self.cursor.fetchall()
-            self.logger.info(f"Retrieved value for {column_name}: {sqldata[0][0]}")
+            self.logger.debug(f"Retrieved value for {column_name}: {sqldata[0][0]}")
             self.cnx.rollback()  # Need to roll back the transaction eaven is there is no error
             return int(sqldata[0][0])
         except mysql.connector.Error as err:
