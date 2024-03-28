@@ -48,7 +48,7 @@ import setproctitle                     # For customizing process title
 from pushbullet import Pushbullet       # Using Pushbullet to send notifications to phone
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.WARNING
+LOGGING_LEVEL = logging.DEBUG
 USE_PUSHBULLET = False
 
 
@@ -190,14 +190,18 @@ class LogiviewTTHserver:
                     sys.exit(1)
                     
                 data = self.sock.recv(1024)
-            
+                if not data:
+                    self.logger.error("No data received from socket")
+                    continue
+                
                 try:
-                    sensor_data = json.loads(data.decode())
+                    decoded_data = data.decode('utf-8')
+                    sensor_data = json.loads(decoded_data)
                 except json.JSONDecodeError as e:
-                    self.logger.error(f"Error decoding JSON: {e}")
+                    self.logger.error(f"Error decoding JSON: {e} - Data: {decoded_data}")
                     continue  # Skip processing this iteration
                 
-                self.logger.debug(f"SENSOR DATA: {sensor_data}")
+                self.logger.debug(f"JSON DATA: {json.dumps(sensor_data)}")
 
                 DS18B20sqltxt = []
 

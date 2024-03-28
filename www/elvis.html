@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moving Average Chart</title>
+    <!-- Include jQuery library -->
+    <script src="http://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <!-- Include CanvasJS library -->
+    <script src="https://canvasjs.com/assets/script/canvasjs.min.js"></script>
+</head>
+
+<body>
+    <h1>Elvis data Plot</h1>
+
+    <!-- Input for start and end dates -->
+    <form id="dateForm">
+        <label for="startDate">Start Date:</label>
+        <input type="date" id="startDate" name="startDate">
+
+        <label for="endDate">End Date:</label>
+        <input type="date" id="endDate" name="endDate">
+
+        <button type="button" onclick="fetchAndPlotData()">Update Plot</button>
+    </form>
+
+    <!-- Custom controls to show/hide series -->
+    <div id="controls">
+        <button type="button" onclick="setAllCheckboxes()">Set All</button>
+        <button type="button" onclick="clearAllCheckboxes()">Clear All</button>
+        <label><input type="checkbox" id="toggleV1" checked> V1</label>
+        <label><input type="checkbox" id="toggleV2" checked> V2</label>
+        <label><input type="checkbox" id="toggleV3" checked> V3</label>
+        <label><input type="checkbox" id="toggleI1" checked> I1</label>
+        <label><input type="checkbox" id="toggleI2" checked> I2</label>
+        <label><input type="checkbox" id="toggleI3" checked> I3</label>
+    </div>
+
+    <button id="load_button">Load Data</button>
+    <div id="chart" style="height: 370px; width: 100%;"></div>
+
+    <script>
+        function setDefaultDates() {
+            const endDateInput = document.getElementById('endDate');
+            const startDateInput = document.getElementById('startDate');
+
+            const today = new Date();
+            endDateInput.value = today.toISOString().slice(0, 10);
+
+            const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+            startDateInput.value = weekAgo.toISOString().slice(0, 10);
+        }
+
+        function setAllCheckboxes() {
+            const checkboxes = document.querySelectorAll('#controls input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = true);
+        }
+        
+        function clearAllCheckboxes() {
+            const checkboxes = document.querySelectorAll('#controls input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+        }
+
+        function fetchAndPlotData() {
+            // Get the JSON data from the provided URL
+            $.get('http://192.168.0.240/elvisdb24h.php', function(data) {
+                // Parse the JSON string into a JSON object
+                var jsonData = JSON.parse(data);
+            
+                // Prepare the data for the chart
+                var labels = jsonData.map(function(item) {
+                    return item.ts;
+                });
+
+                var datasets = [];
+                var colors = ['blue', 'red', 'green', 'purple', 'orange', 'black'];
+                var keys = ['V1', 'V2', 'V3', 'I1', 'I2', 'I3'];
+
+                keys.forEach(function(key, index) {
+                    if (document.getElementById('toggle' + key).checked) {
+                        var dataset = jsonData.map(function(item) {
+                            return {x: new Date(item.ts), y: parseFloat(item[key])};
+                        });
+
+                        datasets.push({
+                            type: "line",
+                            xValueType: "dateTime",
+                            xValueFormatString: "DD MMM YYYY",
+                            yValueFormatString: "#,##0.##",
+                            showInLegend: true,
+                            name: key,
+                            dataPoints: dataset,
+                            color: colors[index]
+                        });
+                    }
+                });
+
+                // Create the chart
+                var chart = new CanvasJS.Chart("chart", {
+                    animationEnabled: true,
+                    theme: "light2",
+                    title:{
+                        text: "Elvis data Plot"
+                    },
+                    axisX:{
+                        valueFormatString: "HH:MM YYYY-MM-DD",
+                        labelFontSize: 12,
+                        titleFontSize: 16,
+                        crosshair: {
+                            enabled: true,
+                            snapToDataPoint: true
+                        },
+                        labelFontSize: 10 // Adjust as needed
+                    },
+                    axisY: {
+                        title: "Values",
+                        labelFontSize: 12,
+                        titleFontSize: 16,
+                        crosshair: {
+                            enabled: true
+                        },
+                        labelFontSize: 10 // Adjust as needed
+                    },
+                    toolTip:{
+                        shared:true
+                    },  
+                    legend:{
+                        cursor:"pointer",
+                        fontSize: 16,
+                        verticalAlign: "center",
+                        horizontalAlign: "right",
+                        dockInsidePlotArea: true,
+                        itemclick: toogleDataSeries
+                    },
+                    zoomEnabled: true,
+                    panEnabled: true,
+                    height: 1000,
+                    animationEnabled: true,
+                    data: datasets
+                });
+                
+                chart.render();
+
+                function toogleDataSeries(e){
+                    if (typeof(e.dataSeries.visible) === "undefined" || e.dataSeries.visible) {
+                        e.dataSeries.visible = false;
+                    } else{
+                        e.dataSeries.visible = true;
+                    }
+                    chart.render();
+                }
+            });
+        }
+
+        // Set default dates and plot data on page load
+        window.onload = function () {
+            setDefaultDates();
+            fetchAndPlotData();
+        }
+
+        // Update plot when a checkbox is clicked
+        document.querySelectorAll('#controls input[type="checkbox"]').forEach(function(checkbox) {
+            checkbox.addEventListener('change', fetchAndPlotData);
+        });
+    </script>
+</body>
+</html>

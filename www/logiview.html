@@ -230,6 +230,11 @@
             setDefaultDates();
             fetchAndPlotData();
         }
+
+         // Update plot when a checkbox is clicked
+         document.querySelectorAll('#controls input[type="checkbox"]').forEach(function(checkbox) {
+            checkbox.addEventListener('change', fetchAndPlotData);
+        });
     </script>
 
 </body>
