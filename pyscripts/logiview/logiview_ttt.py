@@ -49,7 +49,7 @@ import setproctitle                     # For customizing process title
 from pushbullet import Pushbullet       # Using Pushbullet to send notifications to phone
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.DEBUG
+LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = True
 
 
@@ -320,11 +320,12 @@ class Pushbullet:
             self.logger.debug(f"Notification sent successfully: {titlemsg} {body}")
         else:
             self.logger.error(f"Failed to send notification: {titlemsg} {body}")
-            
+
+# Command-line argument parser
 class Parser:
     def __init__(self,logger):
         self.logger = logger
-        self.parser = argparse.ArgumentParser(description="Logo8 server script")
+        self.parser = argparse.ArgumentParser(description="Logiview TTT")
         self.add_arguments()
         
     def add_arguments(self):
@@ -383,6 +384,11 @@ def main():
             if pushbullet is not None:
                 pushbullet.push_note("ERROR: LogiView TTH", f"Initialize failed. Server not started!")
             logger.error("Initialize failed. Server not started!")
+    except KeyboardInterrupt:
+        logger.info("Received a keyboard interrupt. Shutting down gracefully...")
+        if USE_PUSHBULLET:
+            pushbullet.push_note("INFO: LogiView LOGO8",
+                                        f"Received a keyboard interrupt. Shutting down gracefully...")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         logger.error(f"An unexpected error occurred: {e}")

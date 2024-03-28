@@ -43,6 +43,7 @@ import argparse                 # Parser for command-line options and arguments
 import io                       # Core tools for working with streams
 import logging                  # Logging library for Python
 import logging.handlers         # Additional handlers for the logging module
+import requests                 # For sending HTTP requests
 import sys                      # Access to Python interpreter variables
 import time                     # Time-related functions
 from datetime import datetime   # Date/Time-related functions
@@ -60,7 +61,7 @@ setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
 LOGGING_LEVEL = logging.WARNING
-USE_PUSHBULLET = False
+USE_PUSHBULLET = True
 SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
 
 # Setting up constants
@@ -102,7 +103,73 @@ STATUS_COLUMNS = [
     ("WDT", False)
 ]
 
+# Pushbullet class for sending notifications 
+class Pushbullet:
+    def __init__(self, logger, api_key):
+        self.api_key = api_key
+        self.logger = logger
 
+    def push_note(self, title, body):
+        # Add timestamp to title
+        timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Timestamp
+        titlemsg = f"{title} [{timestamp}]"
+        
+        url = "https://api.pushbullet.com/v2/pushes"
+        headers = {
+            "Access-Token": self.api_key,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "type": "note",
+            "title": titlemsg,
+            "body": body
+        }
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            self.logger.debug(f"Notification sent successfully: {titlemsg} {body}")
+        else:
+            self.logger.error(f"Failed to send notification: {titlemsg} {body}")
+
+# Logger class for handling logging
+class LoggerClass:
+    def __init__(self, logging_level=logging.WARNING):
+        self.logger = self.setup_logging(logging_level = logging_level)
+        # Expose logging functions
+        self.debug = self.logger.debug
+        self.info = self.logger.info
+        self.warning = self.logger.warning
+        self.error = self.logger.error
+        self.critical = self.logger.critical
+        self.logger.debug("Logger initialized successfully")
+        
+    def setup_logging(self, logging_level=logging.WARNING):
+        try:
+            # Setting up the logging
+            logger = logging.getLogger('logiview_ttt')
+            logger.setLevel(logging_level)
+
+            # For syslog
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_handler.setFormatter(syslog_format)
+            logger.addHandler(syslog_handler)
+
+            # For console
+            console_handler = logging.StreamHandler()
+            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_handler.setFormatter(console_format)
+            logger.addHandler(console_handler)
+
+            # Create an in-memory text stream to capture stderr
+            captured_output = io.StringIO()
+            self.original_stderr = sys.stderr
+            sys.stderr = captured_output  # Redirect stderr to captured_output
+
+            return logger
+        except Exception as e:
+            return None
+
+# Class to handle temperatures
 class Temperatures:
     def __init__(self):
         for temp_column in TEMP_COLUMNS:
@@ -112,7 +179,7 @@ class Temperatures:
         if hasattr(self, temp_name):
             setattr(self, temp_name, value)
 
-
+# Class to handle status
 class Status:
     def __init__(self):
         for status_name, _ in STATUS_COLUMNS:
@@ -122,12 +189,13 @@ class Status:
         if hasattr(self, status_name):
             setattr(self, status_name, value)
 
-
+# Class to handle pump manager
 class PumpManager:
     def __init__(self):
         self.pump_running = False
 
 
+# Function to get temperature value from the database
 def get_temperature_value(cnx, cursor, column_name, logger):
     sql_str = (
         f"SELECT {column_name} FROM logiview.tempdata order by datetime desc limit 1")
@@ -146,16 +214,15 @@ def get_temperature_value(cnx, cursor, column_name, logger):
 
 
 # LoogoPlcHandler class is used to read and write to the Logo8 PLC as true/false instead av but 0/1
-
-
 class LogoPlcHandler:
-
-    def __init__(self, address):
+    def __init__(self, logger, address):
         try:
             self.plc = snap7.logo.Logo()
             self.plc.connect(address, 0, 2)
+            self.logger = logger
         except Exception as e:
             print(f"Error during initialization: {e}")
+            logger.error(f"Error during initialization: {e}")
             raise
 
     def write_bit(self, vm_address, bit_position, value):
@@ -175,7 +242,7 @@ class LogoPlcHandler:
 
             self.plc.write(vm_address, byte_data_int)
         except Exception as e:
-            print(f"Error writing bit at {vm_address}.{bit_position}: {e}")
+            self.logger.error(f"Error writing bit at {vm_address}.{bit_position}: {e}")
             raise
 
     def read_bit(self, vm_address, bit_position):
@@ -189,19 +256,17 @@ class LogoPlcHandler:
 
             return bool(bit_value)
         except Exception as e:
-            print(f"Error reading bit at {vm_address}.{bit_position}: {e}")
+            self.logger.error(f"Error reading bit at {vm_address}.{bit_position}: {e}")
             raise
 
     def disconnect(self):
         try:
             self.plc.disconnect()
         except Exception as e:
-            print(f"Error during disconnection: {e}")
+            self.logger.error(f"Error during disconnection: {e}")
             raise
 
 # Function to set the transfer pumps on or off
-
-
 def set_transfer_pump(pump, pactive, plc_handler, logger):
     if pump == "PT2T1":
         if pactive:
@@ -234,6 +299,7 @@ class Alghoritm:
             self.set_transfer_pump("PT2T1", False)
         except Exception as e:
             print(f"Error during initialization: {e}")
+            logger.error(f"Error during initialization: {e}")
             raise
 
     def execute_algorithm(self, temp, status):
@@ -318,10 +384,6 @@ class Alghoritm:
 
         # Rule 1:
         # -------
-
-        # 3069 - 2831 = 238
-        # 2925 - 2831 = 94
-        
         off_condition = ((((temp.T2TOP - temp.T1MID) <= 0) and ((temp.T2MID - temp.T1BOT) <= 500))  or (temp.T1BOT >= 7000))
         on_condition = ((((temp.T2TOP - temp.T1MID) >= 300) or ((temp.T2MID - temp.T1BOT) >= 1500)) and (temp.T1BOT < 4500)) and not off_condition
 
@@ -382,43 +444,34 @@ class Alghoritm:
                 self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error setting transfer pump: {e}")
             raise
 
+# Main class for the script
 class MainClass:
-    def __init__(self):
+    def __init__(self,logger, pushbullet, parser):
         try:
-            self.logger = self.setup_logging()
-            if self.logger is None:
-                sys.exit(1)  
+            self.logger = logger
+            self.pushbullet = pushbullet
+            self.parser = parser
             
-
-            # Timestamp
-            self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
-
              # Create pushbullet
-            if USE_PUSHBULLET:
-                self.pushbullet = Pushbullet(args.apikey)
-                self.pushbullet.push_note("INFO: LogiView LOGO8", f"[{self.timestamp}] logiview_logo8.py started")
-            
-            args = self.parse_input_args()
-           
-            self.logger.info(f"INFO: LogiView LOGO8 [{self.timestamp}] logiview_logo8.py started")
- 
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("INFO: LogiView LOGO8", f"Logiview_logo8.py started")
+                   
             # Create a Temperatures and status object
             self.temp = Temperatures()
             self.status = Status()
        
         except Exception as e:
             self.logger.error(f"Error during initialization: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8",
-                                          f"[{self.timestamp}] Error during initialization: {e}")
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error during initialization: {e}")
             sys.exit(1)
 
         # Connect to the MySQL server
         try:
             self.cnx = mysql.connector.connect(
-                user=args.user,
-                password=args.password,
-                host=args.host,
+                user=self.parser.user,
+                password=self.parser.password,
+                host=self.parser.host,
                 database="logiview",  # Assuming you always connect to this database
             )
             self.logger.info("Successfully connected to the MySQL server!")
@@ -428,62 +481,17 @@ class MainClass:
         except mysql.connector.Error as err:
             if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
                 self.logger.error("MySQL connection error: Incorrect username or password")
-                if USE_PUSHBULLET:
-                    self.pushbullet.push_note("ERROR: LogiView LOGO8",
-                                              f"[{self.timestamp}] MySQL connection error: Incorrect username or password")
-
-    def setup_logging(self):
-        try:
-            # Setting up the logging
-            logger = logging.getLogger('logiview_logo8')
-            logger.setLevel(LOGGING_LEVEL)
-
-            # For syslog
-            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
-            syslog_handler.setFormatter(syslog_format)
-            logger.addHandler(syslog_handler)
-
-            # For console
-            console_handler = logging.StreamHandler()
-            console_format = logging.Formatter('%(levelname)s - %(message)s')
-            console_handler.setFormatter(console_format)
-            logger.addHandler(console_handler)
-
-            # Create an in-memory text stream to capture stderr
-            captured_output = io.StringIO()
-            self.original_stderr = sys.stderr
-            #sys.stderr = captured_output  # Redirect stderr to captured_output
-
-            return logger
-
-        except Exception as e:
-            # Log the error using print or any other means, as logging may not be set up yet
-            print(f"Error setting up logging: {type(e).__name__} - {e}")
-            return None
-
-
-    def parse_input_args(self):
-        try:
-            parser = argparse.ArgumentParser(description="Logo8 server script")
-            parser.add_argument("--host", required=False, help="MySQL server ip address", default="192.168.0.240")
-            parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
-            parser.add_argument("-p", "--password", required=True, help="MySQL password")
-            parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
-            parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-
-            # Set exit_on_error=False to prevent sys.exit() on error
-            args = parser.parse_args()
-
-            print(f"Parsed command-line arguments successfully!")
-            return args
-        except SystemExit as e:
-            # Handle the parsing error without terminating the program
-            inargs, _ = parser.parse_known_args()
-            error_message = f"Error parsing arguments {inargs}: {type(e).__name__} - {e}\r\n"
-            self.logger.error(error_message)
-            sys.exit(1)  # or handle the error and exit with an appropriate status code
-
+                if self.pushbullet is not None:
+                    self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: Incorrect username or password")
+            elif err.errno == mysql.connector.errorcode.ER_BAD_DB_ERROR:
+                    self.logger.error("MySQL connection error: Database does not exist")
+                    if self.pushbullet is not None:
+                        self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: Database does not exist")
+            else:
+                self.logger.error(f"MySQL connection error: {err}")
+                if self.pushbullet is not None:
+                    self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: {err}")
+                        
     def update_status_in_db(self, column_name, value):
         sql_str = f"UPDATE logiview.tempdata SET {column_name} = {value} ORDER BY datetime DESC LIMIT 1"
         self.cursor.execute(sql_str)
@@ -503,7 +511,7 @@ class MainClass:
         except mysql.connector.Error as err:
             self.logger.error(f"Database error: {err}")
             if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"[{self.timestamp}] Database error: {err}")
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Database error: {err}")
             self.cnx.rollback()  # Roll back the transaction in case of error
             return None
 
@@ -511,7 +519,7 @@ class MainClass:
         # Create a Logo8 PLC handler
         try:
             # Adjust the IP address as needed
-            plc_handler = LogoPlcHandler('192.168.0.200')
+            plc_handler = LogoPlcHandler(self.logger, '192.168.0.200')
             self.logger.info("Successfully created a Logo8 PLC handler!")
 
             algorithm = Alghoritm(plc_handler, self.logger)
@@ -549,7 +557,7 @@ class MainClass:
                 self.cnx.close()
             if USE_PUSHBULLET:
                 self.pushbullet.push_note("INFO: LogiView LOGO8",
-                                          f"[{self.timestamp}] Received a keyboard interrupt. Shutting down gracefully...")
+                                          f"Received a keyboard interrupt. Shutting down gracefully...")
             sys.exit(0)
         except SystemExit as e:
             sys.stderr = self.original_stderr  # Reset stderr to its original value
@@ -557,12 +565,56 @@ class MainClass:
         except Exception as e:
             self.logger.error(f"Error in main: {e}")
             if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"[{self.timestamp}] Error in main: {e}")
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error in main: {e}")
             sys.exit(1)
+            
+# Command-line argument parser
+class Parser:
+    def __init__(self,logger):
+        self.logger = logger
+        self.parser = argparse.ArgumentParser(description="Logiview LOGO8 script")
+        self.add_arguments()
+        
+    def add_arguments(self): 
+        self.parser.add_argument("--host", required=False, help="MySQL server ip address", default="192.168.0.240")
+        self.parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
+        self.parser.add_argument("-p", "--password", required=True, help="MySQL password")
+        self.parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+        self.parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
+        
+    def parse(self):
+        try:
+            parsed_args = self.parser.parse_args()
+        except SystemExit:
+            error_message = sys.stderr.getvalue().strip()
+            self.logger.error(f"Error during parsing: {error_message}")
+            sys.exit(1)
+                   
+        self.logger.debug("Parsed command-line arguments successfully!")
+                
+        # Set parsed arguments as class attributes
+        self.host = parsed_args.host
+        self.user = parsed_args.user
+        self.password = parsed_args.password
+        self.apikey = parsed_args.apikey
+        self.snap7_lib = parsed_args.snap7_lib
 
 
 def main():
-    main = MainClass()   # Create main class
+    # Create logger
+    logger = LoggerClass(logging_level = LOGGING_LEVEL)
+    
+    # Parse command-line arguments
+    parser = Parser(logger)
+    parser.parse()
+
+    # Create Pushbullet instance
+    if USE_PUSHBULLET:
+        pushbullet = Pushbullet(logger, parser.apikey)
+    else:
+        pushbullet = None
+    
+    main = MainClass(logger, pushbullet, parser)   # Create main class
     main.main_loop()     # Run main loop
 
 
