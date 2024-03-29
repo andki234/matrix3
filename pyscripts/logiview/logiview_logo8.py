@@ -103,6 +103,16 @@ STATUS_COLUMNS = [
     ("WDT", False)
 ]
 
+# Function to exit the program with an error message
+def exit_program(logger, pushbullet, exit_code=1, message="Exiting program"):
+    if exit_code == 0:
+        logger.warning(message)
+    else:
+        logger.error(message)
+    if pushbullet is not None:
+        pushbullet.push_note("ERROR: LogiView TTH", message)
+    sys.exit(exit_code)
+
 # Pushbullet class for sending notifications 
 class Pushbullet:
     def __init__(self, logger, api_key):
@@ -464,7 +474,8 @@ class MainClass:
             self.logger.error(f"Error during initialization: {e}")
             if self.pushbullet is not None:
                 self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error during initialization: {e}")
-            sys.exit(1)
+            exit_program(self.logger, self.pushbullet, exit_code=1, message="Error during initialization")
+            
 
         # Connect to the MySQL server
         try:
@@ -558,15 +569,13 @@ class MainClass:
             if USE_PUSHBULLET:
                 self.pushbullet.push_note("INFO: LogiView LOGO8",
                                           f"Received a keyboard interrupt. Shutting down gracefully...")
+            exit_program(self.logger, self.pushbullet, exit_code=0, message= f"Received a keyboard interrupt. Shutting down gracefully...")
             sys.exit(0)
         except SystemExit as e:
             sys.stderr = self.original_stderr  # Reset stderr to its original value
             sys.exit(0)
         except Exception as e:
-            self.logger.error(f"Error in main: {e}")
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error in main: {e}")
-            sys.exit(1)
+            exit_program(self.logger, self.pushbullet, exit_code=1, message=f"Error in main {e}")
             
 # Command-line argument parser
 class Parser:
@@ -587,8 +596,7 @@ class Parser:
             parsed_args = self.parser.parse_args()
         except SystemExit:
             error_message = sys.stderr.getvalue().strip()
-            self.logger.error(f"Error during parsing: {error_message}")
-            sys.exit(1)
+            exit_program(self.logger, None, exit_code=1, message=f"Error during parsing {error_message}")
                    
         self.logger.debug("Parsed command-line arguments successfully!")
                 

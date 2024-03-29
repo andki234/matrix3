@@ -52,6 +52,15 @@ from pushbullet import Pushbullet       # Using Pushbullet to send notifications
 LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = True
 
+# Function to exit the program with an error message
+def exit_program(logger, pushbullet, exit_code=1, message="Exiting program"):
+    if exit_code == 0:
+        logger.warning(message)
+    else:
+        logger.error(message)
+    if pushbullet is not None:
+        pushbullet.push_note("ERROR: LogiView TTT", message)
+    sys.exit(exit_code)
 
 class LogiviewTTHserver:
     def __init__(self, logger, args, pushbullet, data_socket):
@@ -72,16 +81,9 @@ class LogiviewTTHserver:
             self.cursorA = None
             self.cursorB = None
         except argparse.ArgumentError as e:
-            print(e)
-            self.logger.error(f"Error parsing command-line arguments: {e}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView TTH",
-                                          f"Error parsing command-line arguments: {e}")
+            exit_program(self.logger, self.pushbullet, exit_code=1, message=f"Exiting program: Error parsing command-line arguments: {e}")
         except Exception as e:
-            self.logger.error(f"Error during initialization: {e}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView TTH",
-                                          f"Error during initialization: {e}")
+            exit_program(self.logger, self.pushbullet, exit_code=1, message=f"Exiting program: Error during initialization {e}")
         else:
             # Connect to the MySQL server
             try:
@@ -98,9 +100,11 @@ class LogiviewTTHserver:
 
             except mysql.connector.Error as err:
                 if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
-                    self.logger.error("MySQL connection error: Incorrect username or password")
-                    if self.pushbullet is not None:
-                        self.pushbullet.push_note("ERROR: LogiView TTH", f"MySQL connection error: Incorrect username or password")
+                    exit_program(self.logger, self.pushbullet, message="Exiting program: MySQL connection error: Incorrect username or password")
+                elif err.errno == mysql.connector.errorcode.ER_BAD_DB_ERROR:
+                    exit_program(self.logger, self.pushbullet, message="Exiting program: MySQL connection error: Database does not exist")
+                else:
+                    exit_program(self.logger, self.pushbullet, message="Exiting program: MySQL connection error: {}".format(err))   
             else:
                 self.initialized = True  # Initialized OK!
                         
@@ -109,7 +113,7 @@ class LogiviewTTHserver:
             while True:
                 if self.cursorA is None:
                     self.logger.error(f"Database error: cursorA is None")
-                    sys.exit(1)
+                    exit_program(self.logger, self.pushbullet, message="Exiting program: Database error: cursorA is None")
                     
                 data = self.sock.recv(1024)
                 if not data:
@@ -137,14 +141,9 @@ class LogiviewTTHserver:
                         self.cursorA.execute(sqlstr2)
                         sqldata = self.cursorA.fetchone()
                         if sqldata:
-                            #print("Data found for serial:", sensor_value['serial'])
                             DS18B20sqltxt.extend([str(int(float(sensor_value['temp']) * 100.0)), sqldata[4]])
-                        #else:
-                            #print("No data found for serial:", sensor_value['serial'])
                     except mysql.connector.Error as err:
-                        print("Error executing SQL query:", err)
-                                                
-                #print(DS18B20sqltxt)
+                        self.logger.error("Error executing SQL query: {}".format(err))
 
                 if DS18B20sqltxt:
                     # Generate column names and values dynamically
@@ -167,15 +166,12 @@ class LogiviewTTHserver:
                         sys.stdout.flush()
                         self.logger.error("Error: {}".format(err))
                         sys.stdout.flush()
-
         except KeyboardInterrupt:
-            self.logger.info("Received a keyboard interrupt. Shutting down gracefully...")
             self.cleanup()
+            exit_program(self.logger, self.pushbullet, exit_code=0, message="Exiting program: Received a keyboard interrupt")
         except Exception as e:
-            self.logger.error(f"An unexpected error occurred: {e}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView TTH", f"An unexpected error occurred: {e}")
-            sys.exit(1)
+            exit_program(self.logger, self.pushbullet, exit_code=1, message="Exiting program: An unexpected error occurred")
+            
 
     def cleanup(self):
         if self.sock is not None:
@@ -266,7 +262,7 @@ class DataSocketClass:
                 if max_retries == 0:
                     self.logger.error("Max retries reached. Closing socket.")
                     self.close_socket()
-                    sys.exit(1)
+                    exit_program(self.logger, self.pushbullet, exit_code=1, message="Exiting program: Max socket retries reached")
                 else:
                     max_retries -= 1
                 if not data:
@@ -343,7 +339,7 @@ class Parser:
         except SystemExit:
             error_message = sys.stderr.getvalue().strip()
             self.logger.error(f"Error during parsing: {error_message}")
-            sys.exit(1)
+            exit_program(self.logger, None, exit_code=1, message="Exiting program: Error during parsing")
                    
         self.logger.debug("Parsed command-line arguments successfully!")
                 
@@ -385,14 +381,9 @@ def main():
                 pushbullet.push_note("ERROR: LogiView TTH", f"Initialize failed. Server not started!")
             logger.error("Initialize failed. Server not started!")
     except KeyboardInterrupt:
-        logger.info("Received a keyboard interrupt. Shutting down gracefully...")
-        if USE_PUSHBULLET:
-            pushbullet.push_note("INFO: LogiView LOGO8",
-                                        f"Received a keyboard interrupt. Shutting down gracefully...")
+        exit_program(logger, pushbullet, exit_code=0, message="Exiting program: Received a keyboard interrupt")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        logger.error(f"An unexpected error occurred: {e}")
-        sys.exit(1)
+        exit_program(logger, pushbullet, exit_code=1, message="Exiting program: An unexpected error occurred")
         
 
 if __name__ == "__main__":
