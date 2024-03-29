@@ -60,9 +60,9 @@ from snap7.util import set_bool, get_bool   # Snap7 com to logo8
 setproctitle.setproctitle("logiview_logo8")
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.WARNING
-USE_PUSHBULLET = True
-SNAP7_LOG = True  # Set to appropriate value to enable/disabled Snap7 logging
+LOGGING_LEVEL = logging.WARNING # Set to appropriate value to enable/disabled logging
+USE_PUSHBULLET = True # Set to appropriate value to enable/disabled Pushbullet notifications
+SNAP7_LOG = True  
 
 # Setting up constants
 PUMP_ON_DELAY = 1    # 1 * 5 seconds = 5 seconds
@@ -348,19 +348,19 @@ class Alghoritm:
         # TBTOP Is about 2degC to low as refered to the boiler messured value.
         temp.TBTOP += 200
 
-        on_r1_condition = temp.TBTOP >= 8500 or temp.T1TOP >= 9000 or temp.TRET >= 6800
+        on_r1_condition = temp.TBTOP > 8300 or temp.T1TOP > 9000 or temp.TRET > 6500
         off_r1_condition = (temp.TRET <= 6300 or temp.TBTOP < 8000) and not on_r1_condition
         
         # logger statements for debugging
         self.logger.debug("<RULE 1>")
-        self.logger.debug(f"Activate if TBTOP > 8200 or T1TOP > 9000 or TRET >= 6500")
+        self.logger.debug(f"Activate if TBTOP > 8300 or T1TOP > 9000 or TRET >= 6500")
         self.logger.debug("Deactivate when (TRET <= 6500 or TBTOP < 8000) and not on_r1_condition")
         self.logger.debug("------------------------------------")
         self.logger.debug(f"RULE 1 PT1T2 : {status.PT1T2}")
-        self.logger.debug(f"RULE 1 ON    : ({temp.TBTOP} > 8200 [{temp.TBTOP > 8200}] or")
+        self.logger.debug(f"RULE 1 ON    : ({temp.TBTOP} > 8300 [{temp.TBTOP > 8300}] or")
         self.logger.debug(f"             : ({temp.T1TOP} > 9000 [{temp.T1TOP > 9000}] or")
-        self.logger.debug(f"             : {temp.TRET} >= 6500) [{temp.TRET > 6500}]: {on_r1_condition}")
-        self.logger.debug(f"RULE 1 OFF   : (({temp.TRET} <= 6300 [{temp.TRET <= 6500}] or {temp.TBTOP} < 8000 [{temp.TOP < 8000}]) and")
+        self.logger.debug(f"             : {temp.TRET} > 6500) [{temp.TRET > 6500}]: {on_r1_condition}")
+        self.logger.debug(f"RULE 1 OFF   : (({temp.TRET} <= 6300 [{temp.TRET <= 6500}] or {temp.TBTOP} < 8000 [{temp.TBTOP < 8000}]) and")
         self.logger.debug(f"             : ({not on_r1_condition})")
         self.logger.debug(f"is {off_r1_condition}")
 
@@ -406,8 +406,7 @@ class Alghoritm:
         self.logger.debug(f"RULE 1 ON    : ({temp.T2TOP - temp.T1MID} >= 300) [{(temp.T2TOP - temp.T1MID) >= 300}] or ")
         self.logger.debug(f"             : ({temp.T2MID - temp.T1BOT} >= 1500) [{(temp.T2MID - temp.T1BOT) >= 1500}] is {on_condition}")
         self.logger.debug(f"RULE 1 OFF   : (({temp.T2TOP - temp.T1MID} <= 0) [{(temp.T2TOP - temp.T1MID) <= 0}] and ")
-        self.logger.debug(
-            f"             : ({temp.T2MID - temp.T1BOT} <= 500) [{(temp.T2MID - temp.T1BOT) <= 500}] is {off_condition}")
+        self.logger.debug(f"             : ({temp.T2MID - temp.T1BOT} <= 500) [{(temp.T2MID - temp.T1BOT) <= 500}] is {off_condition}")
 
         # If it is conflicting, then the pump should be turned off
         if (on_condition == True) and (off_condition == True):
@@ -566,14 +565,10 @@ class MainClass:
             plc_handler.disconnect()
             if "cnx" in locals() and self.cnx.is_connected():
                 self.cnx.close()
-            if USE_PUSHBULLET:
-                self.pushbullet.push_note("INFO: LogiView LOGO8",
-                                          f"Received a keyboard interrupt. Shutting down gracefully...")
-            exit_program(self.logger, self.pushbullet, exit_code=0, message= f"Received a keyboard interrupt. Shutting down gracefully...")
-            sys.exit(0)
+            exit_program(self.logger, self.pushbullet, exit_code=0, message="Received a keyboard interrupt. Shutting down gracefully")
         except SystemExit as e:
             sys.stderr = self.original_stderr  # Reset stderr to its original value
-            sys.exit(0)
+            exit_program(self.logger, self.pushbullet, exit_code=e.code, message="Received a system exit signal. Shutting down gracefully")
         except Exception as e:
             exit_program(self.logger, self.pushbullet, exit_code=1, message=f"Error in main {e}")
             

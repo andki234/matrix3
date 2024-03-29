@@ -14,7 +14,7 @@
 # in case of incorrect arguments or encountered issues.
 #
 # Run the script with the following format:
-#     python logiview_tth.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
+#     python logiview_TTT.py --host <MYSQL_SERVER_IP> -u <USERNAME> -p <PASSWORD>
 #
 # Where:
 #     <MYSQL_SERVER_IP> is the MySQL server's IP address.
@@ -49,8 +49,8 @@ import setproctitle                     # For customizing process title
 from pushbullet import Pushbullet       # Using Pushbullet to send notifications to phone
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.WARNING
-USE_PUSHBULLET = True
+LOGGING_LEVEL = logging.WARNING  # Set to appropriate value to enable/disabled logging
+USE_PUSHBULLET = True # Set to appropriate value to enable/disabled Pushbullet notifications
 
 # Function to exit the program with an error message
 def exit_program(logger, pushbullet, exit_code=1, message="Exiting program"):
@@ -62,12 +62,12 @@ def exit_program(logger, pushbullet, exit_code=1, message="Exiting program"):
         pushbullet.push_note("ERROR: LogiView TTT", message)
     sys.exit(exit_code)
 
-class LogiviewTTHserver:
+class LogiviewTTTserver:
     def __init__(self, logger, args, pushbullet, data_socket):
         try:
             self.initialized = False  # Init status
             self.logger = logger  # Set logger
-            self.sock = data_socket.sock  # Set socket
+            self.sock = data_socket  # Set socket
             self.starttime = datetime.now().strftime("%y-%m-%d %H:%M")  # Timestamp
             
             # Create pushbullet
@@ -114,19 +114,8 @@ class LogiviewTTHserver:
                 if self.cursorA is None:
                     self.logger.error(f"Database error: cursorA is None")
                     exit_program(self.logger, self.pushbullet, message="Exiting program: Database error: cursorA is None")
-                    
-                data = self.sock.recv(1024)
-                if not data:
-                    self.logger.error("No data received from socket")
-                    continue
-                
-                try:
-                    decoded_data = data.decode('utf-8')
-                    sensor_data = json.loads(decoded_data)
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Error decoding JSON: {e} - Data: {decoded_data}")
-                    continue  # Skip processing this iteration
-                
+                     
+                sensor_data = self.sock.receive_sensor_data() # Receive data from socket
                 self.logger.debug(f"JSON DATA: {json.dumps(sensor_data)}")
 
                 DS18B20sqltxt = []
@@ -240,7 +229,7 @@ class DataSocketClass:
         except socket.error as e:
             self.logger.error(f"Socket error: {str(e)}")
             if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView TTH", f"Socket connection error: {str(e)}")
+                self.pushbullet.push_note("ERROR: LogiView TTT", f"Socket connection error: {str(e)}")
             return None
 
 
@@ -251,10 +240,10 @@ class DataSocketClass:
             self.logger.info("Socket connected successfully")
         except Exception as e:
             if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView TTH", f"Socket connection error: {str(e)}")
+                self.pushbullet.push_note("ERROR: LogiView TTT", f"Socket connection error: {str(e)}")
             self.logger.error(f"Failed to connect to socket: {e}")
             
-    def receive_data(self):
+    def receive_sensor_data(self):
         max_retries = 5
         while True:
             try:
@@ -371,14 +360,14 @@ def main():
         data_socket = DataSocketClass(logger, parser, pushbullet, host='192.168.162', port=18999)
         data_socket.connect()
         
-        # If datasocket is connected, create LogiviewTTHserver object
+        # If datasocket is connected, create LogiviewTTTserver object
         if data_socket.sock:        
-            logiview_server= LogiviewTTHserver(logger, parser, pushbullet, data_socket)   # Create TTH-Server
+            logiview_server= LogiviewTTTserver(logger, parser, pushbullet, data_socket)   # Create TTT-Server
             if logiview_server.initialized:
                 logiview_server.main_loop()             # if all ok then execute main loop
         else:
             if pushbullet is not None:
-                pushbullet.push_note("ERROR: LogiView TTH", f"Initialize failed. Server not started!")
+                pushbullet.push_note("ERROR: LogiView TTT", f"Initialize failed. Server not started!")
             logger.error("Initialize failed. Server not started!")
     except KeyboardInterrupt:
         exit_program(logger, pushbullet, exit_code=0, message="Exiting program: Received a keyboard interrupt")
