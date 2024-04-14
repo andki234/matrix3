@@ -247,6 +247,7 @@ class DataSocketClass:
         max_retries = 5
         while True:
             try:
+                self.sock.settimeout(120)  # Timeout set to 120 seconds
                 data = self.sock.recv(1024)
                 if max_retries == 0:
                     self.logger.error("Max retries reached. Closing socket.")
@@ -262,6 +263,10 @@ class DataSocketClass:
                     self.logger.debug(f"Received data from socket: {data}")
                     json_data = json.loads(data.decode())
                     return json_data
+            except socket.timeout:
+                self.logger.error("Timeout occurred while receiving data from socket")
+                self.reconnect()  # Reconnect if a timeout occurs
+                continue
             except Exception as e:
                 self.logger.error(f"Error receiving data from socket: {e}")
                 self.reconnect()  # Reconnect if an error occurs
