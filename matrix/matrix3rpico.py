@@ -6,30 +6,33 @@ import machine
 import utime
 import json
 import gc
+import errno  # Import errno for error codes
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
 class WiFiConnection:
-    def __init__(self, max_retries=5, timeout=10):
+    def __init__(self, config_path='config.json', max_retries=5, timeout=10):
         """
         Initializes the WiFiConnection class.
 
+        :param config_path: Path to the JSON configuration file.
         :param max_retries: Maximum number of retry attempts to connect to the WiFi.
         :param timeout: Time (in seconds) to wait before each retry attempt.
         """
-        with open('config.json', 'r') as f:
-            config = json.load(f)
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
             self.ssid = config['wifi_ssid']
             self.password = config['wifi_password']
-            self.sta_if = network.WLAN(network.STA_IF)
+        except (OSError, ValueError, KeyError) as e:
+            raise Exception(f"Error loading WiFi configuration: {e}")
+
+        self.sta_if = network.WLAN(network.STA_IF)
         self.max_retries = max_retries
         self.timeout = timeout
 
     def connect(self):
         """
         Connects to the WiFi network with retry logic.
-
-        The method attempts to connect to the WiFi network, retrying up to `max_retries` times
-        with a delay of `timeout` seconds between attempts.
 
         :return: The network interface if connected, otherwise None.
         """
@@ -45,10 +48,11 @@ class WiFiConnection:
         while not self.sta_if.isconnected() and retries < self.max_retries:
             print(f'Attempt {retries + 1} of {self.max_retries}...')
             self.sta_if.connect(self.ssid, self.password)
-            for _ in range(self.timeout):
-                if self.sta_if.isconnected():
-                    break
+            start_time = time.time()
+            while not self.sta_if.isconnected() and (time.time() - start_time) < self.timeout:
                 time.sleep(1)
+            if self.sta_if.isconnected():
+                break
             retries += 1
 
         if self.sta_if.isconnected():
@@ -80,178 +84,239 @@ class DisplayManager:
         }
 
     def draw_tank_outline(self, tank_no, status):
+        color = "WHITE"
         if status is None:
-            self.graphics.set_pen(self.pens["YELLOW"])
+            color = "YELLOW"
         elif status == 0:
-            self.graphics.set_pen(self.pens["WHITE"])
+            color = "WHITE"
         elif status == 1:
-            self.graphics.set_pen(self.pens["RED2"])
-        else:
-            self.graphics.set_pen(self.pens["WHITE"])
+            color = "RED2"
 
-        pos = [1, 12, 23]
-        i = pos[tank_no - 1]
+        self.graphics.set_pen(self.pens[color])
+        positions = [1, 12, 23]
+        i = positions[tank_no - 1]
         self.graphics.line(self.width - i, 0, self.width - i, self.height)
         self.graphics.line(self.width - i - 9, 0, self.width - i - 9, self.height)
         self.graphics.line(self.width - i - 9, 0, self.width - i, 0)
 
+
     def draw_tank_error(self):
         self.graphics.set_pen(self.pens["RED"])
-        self.graphics.line(self.width, 0, self.width - 33, self.height)
-        self.graphics.line(self.width - 32, 0, self.width, self.height)
+        self.graphics.line(self.width - 1, 0, self.width - 33, self.height - 1)
+        self.graphics.line(self.width - 32, 0, self.width - 1, self.height - 1)
 
-    def draw_water_tank_level(self, tank, plevel, tank_color=None):
-        plevel = max(0, min(100, plevel))
-        pos = [1, 12, 23]
-        tank_height = round((self.height / 100) * plevel)
-        self.graphics.set_pen(tank_color if tank_color else self.pens["RED"])
-        i = pos[tank - 1]
-        self.graphics.rectangle(self.width - i - 8, 33 - tank_height, 8, tank_height)
+    def draw_water_tank_level(self, tank_no, level_percent):
+        level_percent = max(0, min(100, level_percent))
+        positions = [1, 12, 23]
+        tank_height = round((self.height / 100) * level_percent)
+        self.graphics.set_pen(self.pens["RED"])
+        i = positions[tank_no - 1]
+        x = self.width - i - 8
+        y = self.height - tank_height
+        self.graphics.rectangle(x, y, 8, tank_height)
 
     def draw_clock(self):
         rtc = machine.RTC()
-        year, month, day, wd, hour, minute, second, _ = rtc.datetime()
-        clock = "{:02}:{:02}".format(hour, minute)
+        year, month, day, weekday, hour, minute, second, _ = rtc.datetime()
+        clock_str = "{:02}:{:02}".format(hour, minute)
         self.graphics.set_font("bitmap8")
         self.graphics.set_pen(self.pens["GREEN"])
-        w = self.graphics.measure_text(clock, 1, 1, 1)
-        self.graphics.text(clock, int(self.width / 4) - int(w / 2) - 2, 24, 1, 1, 0, 2)
+        text_width = self.graphics.measure_text(clock_str, scale=1, spacing=2)
+        x = int(self.width / 4) - int(text_width / 2) + 1
+        self.graphics.text(clock_str, x, 24, scale=1, spacing=2)
 
     def draw_energy_consumption(self, power_data):
-        actualw = "{:4}W".format(power_data[1])
-        total24kw = "{:5}".format(power_data[0])
+        actual_wattage = "{:4}W".format(power_data[1])
+        total_kwh = "{:5}".format(power_data[0])
         self.graphics.set_font("bitmap8")
 
-        if int(power_data[1]) < 1000:
-            self.graphics.set_pen(self.pens["WHITE"])
-        elif int(power_data[1]) < 2500:
-            self.graphics.set_pen(self.pens["YELLOW"])
+        # Set color based on power usage
+        if power_data[1] < 1000:
+            pen_color = "WHITE"
+        elif power_data[1] < 2500:
+            pen_color = "YELLOW"
         else:
-            self.graphics.set_pen(self.pens["RED"])
+            pen_color = "RED"
 
-        w = self.graphics.measure_text(actualw, 1, 1, 1)
-        self.graphics.text(actualw, int(self.width / 4) - int(w / 2), 2, scale=1)
+        self.graphics.set_pen(self.pens[pen_color])
+        text_width = self.graphics.measure_text(actual_wattage)
+        x = int(self.width / 4) - int(text_width / 2)
+        self.graphics.text(actual_wattage, x, 2, scale=1)
 
         self.graphics.set_pen(self.pens["WHITE"])
-        w = self.graphics.measure_text(total24kw, 1, 1, 1)
-        self.graphics.text(total24kw, int(self.width / 4) - int(w / 2), 13, scale=1)
+        text_width = self.graphics.measure_text(total_kwh)
+        x = int(self.width / 4) - int(text_width / 2)
+        self.graphics.text(total_kwh, x, 13, scale=1)
 
-    def draw_water_tanks(self, tank_level, bp_status):
+    def draw_water_tanks(self, tank_levels, bp_status):
         for i in range(1, 4):
             self.draw_tank_outline(i, bp_status)
-            self.draw_water_tank_level(i, tank_level[i - 1])
+            self.draw_water_tank_level(i, tank_levels[i - 1])
 
-    def update_display(self, tank_level, bp_status, power_data):
+    def update_display(self, tank_levels, bp_status, power_data):
         self.graphics.set_pen(self.pens["BLACK"])
         self.graphics.clear()
 
-        if tank_level is None:
+        if tank_levels is None:
             self.draw_tank_error()
         else:
-            self.draw_water_tanks(tank_level, bp_status[0])
-        
-        self.draw_energy_consumption(power_data)
-        self.draw_clock()
+            self.draw_water_tanks(tank_levels, bp_status[0])
 
+        if (power_data is not None) and power_data[0] != 0 and power_data[1] != 0:
+            self.draw_energy_consumption(power_data)
+            print("Power data displayed. {power_data}")
+        else:
+            print("Power data is not available; skipping energy consumption display.")
+
+        self.draw_clock()
         self.i75.update()
 
     def boot_display(self):
         text = "STARTUP!"
-        self.graphics.set_font("bitmap8")
+        self.graphics.set_font("bitmap8")  # Use a suitable font
         self.graphics.set_pen(self.pens["BLACK"])
         self.graphics.clear()
         self.graphics.set_pen(self.pens["BLUE"])
-        w = self.graphics.measure_text(text, 1, 1, 1)
-        self.graphics.text(text, int(self.width / 2) - int(w / 2), int(self.height / 2) - 3, 1, scale=1)
+
+        scale = 1
+        spacing = 1  # Set character spacing
+        text_width = self.graphics.measure_text(text, scale=scale, spacing=spacing)
+
+        print(f"Text width: {text_width}")
+        print(f"Display width: {self.width}")
+
+        x = int(self.width / 2) - int(text_width / 2)  # Center horizontally
+        y = int(self.height / 2) - int(self.graphics.measure_text("A", scale=scale, spacing=spacing) / 2) - 2  # Center vertically
+
+        self.graphics.text(text, x, y, scale=scale, spacing=spacing)
         self.i75.update()
 
 class DataFetcher:
-    def __init__(self, wlan):
+    def __init__(self, wlan, max_retries=3, retry_delay=5):
+        """
+        Initializes the DataFetcher class.
+
+        :param wlan: The WLAN interface object.
+        :param max_retries: Maximum number of retry attempts for the socket connection.
+        :param retry_delay: Delay (in seconds) between retry attempts.
+        """
         self.wlan = wlan
-
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        
     def connect_and_receive_data(self, host, port):
-        try:
-            gc.collect()
-            s = socket.socket()
-        except OSError as error:
-            print(f"Socket creation error: {error}")
-            return None
+        retries = 0
+        while retries < self.max_retries:
+            try:
+                gc.collect()
+                print(f"Attempt {retries + 1} to connect to {host}:{port}")
 
-        try:
-            s.connect((host, port))
-        except OSError as error:
-            print(f"Socket connection error: {error}")
-            print("Socket not connected")
-            self.close_socket(s)
-            return None
+                # Check if connected to Wi-Fi
+                if not self.wlan.isconnected():
+                    print("Wi-Fi is not connected. Attempting to reconnect.")
+                    # Attempt to reconnect
+                    # Since WiFiConnection manages the connection, you may need to handle reconnection here
+                    raise Exception("Wi-Fi is not connected.")
+                
+                s = socket.socket()
+                s.settimeout(1000)
+                print("Socket created")
+                try:
+                    s.connect((host, port))
+                except OSError as e:
+                    print(f"OSError during connect: {e}")
+                    #s.close()
+                    #retries += 1
+                    #print(f"Retrying in {self.retry_delay} seconds...")
+                    #time.sleep(self.retry_delay)
+                    #continue
+                print(f"Connected to {host}:{port}")
+                json_data = b''
 
-        try:
-            json_data = s.recv(512)
-            self.close_socket(s)
-            if not json_data:
-                print("Received empty data.")
-                return None
-            print(f"Received data: {json_data}")
-        except OSError as error:
-            print(f"Error receiving data: {error}")
-            return None
+                while True:
+                    try:
+                        chunk = s.recv(1024)
+                        if not chunk:
+                            # No more data from the server
+                            break
+                        json_data += chunk
+                    except OSError as e:
+                        print(f"OSError during recv: {e}")
+                        break
+                s.close()
+                print("Socket closed")
 
-        try:
-            parsed_data = json.loads(json_data.decode("utf-8"))
-            return parsed_data
-        except ValueError as error:
-            print(f"Error decoding JSON data: {error}")
-            return None
-
-    def close_socket(self, s):
-        s.close()
-        del s
+                if not json_data:
+                    print("Received empty data.")
+                    return None
+                print(f"Received data: {json_data}")
+                try:
+                    parsed_data = json.loads(json_data.decode("utf-8"))
+                    print(f"Parsed data: {parsed_data}")
+                    return parsed_data
+                except ValueError as e:
+                    print(f"JSON decoding error: {e}")
+                    print(f"Data received: {json_data}")
+                    return None
+            except Exception as e:
+                print(f"Exception occurred: {e}")
+                print(f"Type of exception: {type(e)}")
+                print(f"Exception args: {e.args}")
+                # Map error code if possible
+                if isinstance(e, OSError) and e.args:
+                    error_code = e.args[0]
+                    print(f"Error code: {error_code}")
+                    if error_code == errno.ECONNREFUSED:
+                        print("Connection refused.")
+                    elif error_code == errno.ETIMEDOUT:
+                        print("Connection timed out.")
+                    elif error_code == errno.EHOSTUNREACH:
+                        print("No route to host.")
+                    else:
+                        print(f"Unknown error code: {error_code}")
+                else:
+                    print("An unexpected error occurred during socket connection.")
+                retries += 1
+                print(f"Retrying in {self.retry_delay} seconds...")
+                time.sleep(self.retry_delay)
+        print(f"Failed to connect to {host}:{port} after {self.max_retries} attempts.")
+        return None
 
     def wifi_get_data(self, host, port, data_format):
+        print(f"Attempting to fetch data from {host}:{port} with format {data_format}")
         data = self.connect_and_receive_data(host, port)
-
         if data is not None:
             try:
-                parsed_data = data
                 if data_format == "TANK_TEMPS":
                     rearranged_data = [
-                        parsed_data.get("T1P", 0),
-                        parsed_data.get("T2P", 0),
-                        parsed_data.get("T3P", 0),
+                        int(data.get("T1P", 0)),
+                        int(data.get("T2P", 0)),
+                        int(data.get("T3P", 0)),
                     ]
-                    return [int(value) for value in rearranged_data]
-
+                    return rearranged_data
                 elif data_format == "SYSTEM_STATUS":
                     rearranged_data = [
-                        parsed_data.get("BP", 0),
-                        parsed_data.get("PT1T2", 0),
-                        parsed_data.get("PT2T1", 0),
+                        int(data.get("BP", 0)),
+                        int(data.get("PT1T2", 0)),
+                        int(data.get("PT2T1", 0)),
                     ]
-                    return [int(value) for value in rearranged_data]
-
+                    return rearranged_data
                 elif data_format == "ELECTRIC_POWER":
                     rearranged_data = [
-                        parsed_data.get("TOTKWH", 0),
-                        parsed_data.get("PKW", 0),
+                        float(data.get("TOTKWH", 0)),
+                        float(data.get("PKW", 0)),
                     ]
-                    formatted_data = []
-                    for value_str in rearranged_data:
-                        try:
-                            int_value = int(float(value_str) * 1000)
-                            formatted_data.append(int_value)
-                        except (ValueError, TypeError):
-                            formatted_data.append(0)
+                    # Convert kW to W for power data
+                    formatted_data = [int(rearranged_data[0] * 1000), int(rearranged_data[1] * 1000)]
                     return formatted_data
-
                 else:
                     print("Unsupported data format")
                     return None
-
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 print(f"Error processing data: {e}")
                 return None
         else:
-            print("No data received or failed to fetch data.")
+            print(f"No data received for {data_format}.")
             return None
 
 class MainApp:
@@ -264,60 +329,69 @@ class MainApp:
         self.i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32, panel_type=Interstate75.PANEL_FM6126A)
         self.graphics = self.i75.display
         self.display_manager = DisplayManager(self.i75, self.graphics)
+        print(f"Display width: {self.i75.width}")
+        print(f"Display height: {self.i75.height}")
         self.wifi_connection = WiFiConnection(max_retries=5, timeout=10)
+        # Initialize data fetcher without wlan; we'll set it after connecting
         self.data_fetcher = None
 
     def is_last_sunday(self, year, month, day):
         # Calculate if the given day is the last Sunday of the given month
-        days_in_month = [31, 29 if year % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        last_day_of_month = days_in_month[month - 1]
-        last_sunday = last_day_of_month - (utime.mktime((year, month, last_day_of_month, 0, 0, 0, 0, 0)) // 86400) % 7
+        # Get the number of days in the month
+        if month == 12:
+            next_month = 1
+            next_year = year + 1
+        else:
+            next_month = month + 1
+            next_year = year
+        # Get timestamp for the first day of the next month
+        t = utime.mktime((next_year, next_month, 1, 0, 0, 0, 0, 0)) - 86400  # Last day of current month
+        last_day_tuple = utime.localtime(t)
+        last_day = last_day_tuple[2]
+        last_sunday = last_day - ((last_day_tuple[6]) % 7)  # Subtract weekday to get last Sunday
         return day == last_sunday
 
     def is_dst(self, year, month, day):
         # DST starts on the last Sunday of March and ends on the last Sunday of October
+        if month < 3 or month > 10:
+            return False
         if month > 3 and month < 10:
             return True
-        if month == 3 and self.is_last_sunday(year, month, day):
-            return True
-        if month == 10 and not self.is_last_sunday(year, month, day):
-            return True
+        last_sunday = self.is_last_sunday(year, month, day)
+        if month == 3:
+            return day >= last_sunday
+        elif month == 10:
+            return day < last_sunday
         return False
 
     def set_rtc_sweden_time(self):
-        # Sync time with NTP server to get accurate UTC time
-        ntptime.settime()
+        try:
+            # Sync time with NTP server to get accurate UTC time
+            print("Setting RTC time using NTP...")
+            ntptime.settime()
+            print("NTP time set.")
 
-        # Get current time in UTC
-        year, month, mday, hour, minute, second, weekday, yearday = utime.localtime()
+            # Get current time in UTC
+            year, month, mday, hour, minute, second, weekday, yearday = utime.localtime()
 
-        # Sweden is in CET (UTC+1) during standard time and CEST (UTC+2) during daylight saving time
-        utc_offset = 1
+            # Sweden is in CET (UTC+1) during standard time and CEST (UTC+2) during daylight saving time
+            utc_offset = 1
 
-        # Check if DST applies
-        if self.is_dst(year, month, mday):
-            utc_offset = 2
+            # Check if DST applies
+            if self.is_dst(year, month, mday):
+                utc_offset = 2
 
-        # Apply the UTC offset
-        hour = hour + utc_offset
+            # Apply the UTC offset
+            t = utime.mktime((year, month, mday, hour, minute, second, weekday, yearday))
+            t += utc_offset * 3600  # Adjust for UTC offset
+            adjusted_time = utime.localtime(t)
 
-        # Correct for overflow if hour goes beyond 24
-        if hour >= 24:
-            hour -= 24
-            mday += 1
-
-            # Adjust month and year if day overflows
-            days_in_month = [31, 29 if year % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-            if mday > days_in_month[month - 1]:
-                mday = 1
-                month += 1
-                if month > 12:
-                    month = 1
-                    year += 1
-
-        # Set the RTC to the adjusted local time
-        rtc = machine.RTC()
-        rtc.datetime((year, month, mday, 0, hour, minute, second, 0))
+            # Set the RTC to the adjusted local time
+            rtc = machine.RTC()
+            rtc.datetime((adjusted_time[0], adjusted_time[1], adjusted_time[2], adjusted_time[6], adjusted_time[3], adjusted_time[4], adjusted_time[5], 0))
+            print(f"RTC set to local time: {adjusted_time}")
+        except Exception as e:
+            print(f"Error setting RTC time: {e}")
 
     def main(self):
         self.i75.set_led(255, 0, 0)
@@ -329,29 +403,59 @@ class MainApp:
             self.i75.set_led(255, 0, 0)  # Set LED to red to indicate failure
             return
 
-        self.data_fetcher = DataFetcher(wlan)
+        # Initialize DataFetcher with wlan
+        self.data_fetcher = DataFetcher(wlan=wlan, max_retries=3, retry_delay=5)
+
         self.set_rtc_sweden_time()
         self.i75.set_led(0, 0, 0)
 
-        while True:
-            tank_level = self.data_fetcher.wifi_get_data(self.SERVER_IP, self.TANK_TEMPS_PORT, data_format="TANK_TEMPS")
-            bp_status = self.data_fetcher.wifi_get_data(self.SERVER_IP, self.STATUS_PORT, data_format="SYSTEM_STATUS")
-            power_data = self.data_fetcher.wifi_get_data(self.SERVER_IP, self.ENERGY_PORT, data_format="ELECTRIC_POWER")
+        try:
+            while True:
+                print("Fetching tank levels...")
+                tank_levels = self.data_fetcher.wifi_get_data(
+                    self.SERVER_IP, self.TANK_TEMPS_PORT, data_format="TANK_TEMPS"
+                )
+                print("tank_levels:", tank_levels)
 
-            if tank_level is None or bp_status is None or power_data is None:
-                print("Error retrieving data, skipping update.")
-                continue
+                print("Fetching bp_status...")
+                bp_status = self.data_fetcher.wifi_get_data(
+                    self.SERVER_IP, self.STATUS_PORT, data_format="SYSTEM_STATUS"
+                )
+                print("bp_status:", bp_status)
 
-            self.display_manager.update_display(tank_level, bp_status, power_data)
-            initial_free_memory = gc.mem_free()
-            print("Free mem:", initial_free_memory, "bytes")
-            gc.collect()
-            self.i75.set_led(0, 10, 0)
-            time.sleep(5)
-            self.i75.set_led(0, 0, 0)
+                print("Fetching power data...")
+                power_data = self.data_fetcher.wifi_get_data(
+                    self.SERVER_IP, self.ENERGY_PORT, data_format="ELECTRIC_POWER"
+                )
+                print("power_data:", power_data)
 
-        wlan.disconnect()
-        wlan.active(False)
+                # We only skip the update if tank levels or bp_status are missing
+                if None in (tank_levels, bp_status):
+                    print("Essential data missing, skipping update.")
+                    time.sleep(5)
+                    continue
+
+                # It's acceptable if power_data is None; we handle it in the display
+                if power_data is None:
+                    print("Power data not received; proceeding without it.")
+
+                print(f"Tank Levels: {tank_levels}")
+                print(f"BP Status: {bp_status}")
+                print(f"Power Data: {power_data}")
+
+                self.display_manager.update_display(tank_levels, bp_status, power_data)
+                print("Display updated.")
+                print("Free memory before GC:", gc.mem_free(), "bytes")
+                gc.collect()
+                print("Free memory after GC:", gc.mem_free(), "bytes")
+                self.i75.set_led(0, 10, 0)
+                time.sleep(5)
+                self.i75.set_led(0, 0, 0)
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            wlan.disconnect()
+            wlan.active(False)
 
 if __name__ == "__main__":
     app = MainApp()
