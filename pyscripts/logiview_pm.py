@@ -73,7 +73,7 @@ from pushbullet import Pushbullet   # Using Pushbullet to send notifications to 
 setproctitle.setproctitle("logiview_pm")
 
 # Set to appropriate value to for logging level
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = True
 
 
@@ -221,8 +221,8 @@ class LogiviewPMserver:
                     False,  # do not use_authbind for this script
                     True  # do not use_setsid for this script
                 ),
-                "/home/pi/logiview/logiview_tth.py": (
-                    "logiview_tth",
+                "/home/pi/logiview/logiview_ttt.py": (
+                    "logiview_ttt",
                     ["--host", "192.168.0.240", "--user", "pi", "--password",
                         self.args.password, "--apikey", self.args.apikey],
                     True,  # use_authbind for this script

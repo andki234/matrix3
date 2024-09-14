@@ -159,7 +159,7 @@ class EnvironmentServerClass:
             # Create a socket and bind to port SOCKET_PORT
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("", SOCKET_PORT))
-                s.listen(1)
+                s.listen()
                 self.logger.info(f"Socket is listening on port {SOCKET_PORT}")
                 
                 while True:

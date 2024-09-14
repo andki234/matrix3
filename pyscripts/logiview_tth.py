@@ -47,7 +47,7 @@ from pushbullet import Pushbullet       # Using Pushbullet to send notifications
 
 # Set to appropriate value to enable/disabled logging
 LOGGING_LEVEL = logging.WARNING
-USE_PUSHBULLET = True
+USE_PUSHBULLET = False
 
 
 class LogiviewTTHserver:
