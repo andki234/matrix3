@@ -9,6 +9,119 @@ import gc
 import errno  # Import errno for error codes
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 
+import utime
+import _thread  # Ensure your MicroPython firmware supports threading
+
+class Logger:
+    # Define log levels as class constants
+    LOG_LEVEL_DEBUG = 10
+    LOG_LEVEL_INFO = 20
+    LOG_LEVEL_WARNING = 30
+    LOG_LEVEL_ERROR = 40
+
+    def __init__(self, initial_level=LOG_LEVEL_INFO):
+        """
+        Initializes the Logger instance.
+
+        :param initial_level: The initial logging level. Defaults to LOG_LEVEL_INFO.
+        """
+        self.current_log_level = initial_level
+        self.original_print = print  # Preserve the original print function
+        try:
+            self.lock = _thread.allocate_lock()
+        except AttributeError:
+            # If threading is not supported, use a dummy lock
+            self.lock = None
+
+    def _current_time(self):
+        """
+        Helper method to get the current time as a formatted string.
+
+        :return: Current time in HH:MM:SS format.
+        """
+        year, month, mday, hour, minute, second, weekday, yearday = utime.localtime()
+        return f"{hour:02}:{minute:02}:{second:02}"
+
+    def _log(self, level_name, level, *args, **kwargs):
+        """
+        Internal method to handle logging.
+
+        :param level_name: String representation of the log level.
+        :param level: Integer value of the log level.
+        """
+        if self.current_log_level <= level:
+            timestamp = self._current_time()
+            message = f"[{level_name}] [{timestamp}]"
+            if self.lock:
+                with self.lock:
+                    self.original_print(message, *args, **kwargs)
+            else:
+                self.original_print(message, *args, **kwargs)
+
+    def debug(self, *args, **kwargs):
+        """
+        Log a DEBUG level message.
+        """
+        self._log("DEBUG", self.LOG_LEVEL_DEBUG, *args, **kwargs)
+
+    def info(self, *args, **kwargs):
+        """
+        Log an INFO level message.
+        """
+        self._log("INFO", self.LOG_LEVEL_INFO, *args, **kwargs)
+
+    def warning(self, *args, **kwargs):
+        """
+        Log a WARNING level message.
+        """
+        self._log("WARNING", self.LOG_LEVEL_WARNING, *args, **kwargs)
+
+    def error(self, *args, **kwargs):
+        """
+        Log an ERROR level message.
+        """
+        self._log("ERROR", self.LOG_LEVEL_ERROR, *args, **kwargs)
+
+    def set_log_level(self, level):
+        """
+        Set the global log level.
+
+        :param level: One of LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARNING, LOG_LEVEL_ERROR
+        """
+        if level in (self.LOG_LEVEL_DEBUG, self.LOG_LEVEL_INFO, self.LOG_LEVEL_WARNING, self.LOG_LEVEL_ERROR):
+            self.current_log_level = level
+            self.info(f"Log level set to {self._level_name(level)} ({level})")
+        else:
+            self.warning(f"Attempted to set invalid log level: {level}")
+
+    def disable_logging(self):
+        """
+        Disable all logging by setting the log level higher than any defined level.
+        """
+        self.current_log_level = 100  # Higher than any defined log level
+        self.original_print("[INFO] [", self._current_time(), "] Logging disabled.")
+
+    def _level_name(self, level):
+        """
+        Helper method to get the name of the log level.
+
+        :param level: The log level integer.
+        :return: The name of the log level as a string.
+        """
+        level_names = {
+            self.LOG_LEVEL_DEBUG: "DEBUG",
+            self.LOG_LEVEL_INFO: "INFO",
+            self.LOG_LEVEL_WARNING: "WARNING",
+            self.LOG_LEVEL_ERROR: "ERROR",
+        }
+        return level_names.get(level, "UNKNOWN")
+
+# ================================
+# Instantiate the Logger
+# ================================
+
+logger = Logger(initial_level=Logger.LOG_LEVEL_INFO)  # Set desired initial log level
+
 class WiFiConnection:
     def __init__(self, config_path='config.json', max_retries=5, timeout=10):
         """
@@ -37,16 +150,16 @@ class WiFiConnection:
         :return: The network interface if connected, otherwise None.
         """
         if self.sta_if.isconnected():
-            print('Already connected to network.')
-            print('Network config:', self.sta_if.ifconfig())
+            logger.warning('Already connected to network.')
+            logger.info('Network config:', self.sta_if.ifconfig())
             return self.sta_if
 
-        print('Connecting to network...')
+        logger.info('Connecting to network...')
         self.sta_if.active(True)
 
         retries = 0
         while not self.sta_if.isconnected() and retries < self.max_retries:
-            print(f'Attempt {retries + 1} of {self.max_retries}...')
+            logger.warning(f'Attempt {retries + 1} of {self.max_retries}...')
             self.sta_if.connect(self.ssid, self.password)
             start_time = time.time()
             while not self.sta_if.isconnected() and (time.time() - start_time) < self.timeout:
@@ -56,11 +169,11 @@ class WiFiConnection:
             retries += 1
 
         if self.sta_if.isconnected():
-            print('Successfully connected to network!')
-            print('Network config:', self.sta_if.ifconfig())
+            logger.info('Successfully connected to network!')
+            logger.info('Network config:', self.sta_if.ifconfig())
             return self.sta_if
         else:
-            print(f'Failed to connect to {self.ssid} after {self.max_retries} attempts.')
+            logger.error(f'Failed to connect to {self.ssid} after {self.max_retries} attempts.')
             return None
 
 class DisplayManager:
@@ -75,7 +188,7 @@ class DisplayManager:
         return {
             "MAGENTA": self.graphics.create_pen(200, 0, 200),
             "BLACK": self.graphics.create_pen(0, 0, 0),
-            "WHITE": self.graphics.create_pen(150, 150, 150),
+            "WHITE": self.graphics.create_pen(100, 100, 100),
             "GREEN": self.graphics.create_pen(0, 200, 0),
             "RED": self.graphics.create_pen(200, 0, 0),
             "RED2": self.graphics.create_pen(100, 50, 50),
@@ -147,13 +260,29 @@ class DisplayManager:
         text_width = self.graphics.measure_text(total_kwh)
         x = int(self.width / 4) - int(text_width / 2)
         self.graphics.text(total_kwh, x, 13, scale=1)
+        
+    def draw_env_temps(self, env_temps):
+        # temps with one decimal
+        if env_temps[0] > 0:
+            outside_temp = "+{:4.1f}".format(env_temps[0])
+        else:
+            outside_temp = "{:4.1f}".format(env_temps[0])
+            
+        boiler_room_temp = "{:4.1f}".format(env_temps[1])
+        
+        self.graphics.set_font("bitmap8")
+        self.graphics.set_pen(self.pens["BLUE"])
+        
+        text_width = self.graphics.measure_text(outside_temp, scale=1, spacing=2)
+        x = int(self.width / 4) - int(text_width / 2)
+        self.graphics.text(outside_temp, x , 2, scale=1, spacing=2)
 
     def draw_water_tanks(self, tank_levels, bp_status):
         for i in range(1, 4):
             self.draw_tank_outline(i, bp_status)
             self.draw_water_tank_level(i, tank_levels[i - 1])
 
-    def update_display(self, tank_levels, bp_status, power_data):
+    def update_display(self, tank_levels, bp_status, power_data, env_temps):
         self.graphics.set_pen(self.pens["BLACK"])
         self.graphics.clear()
 
@@ -164,9 +293,14 @@ class DisplayManager:
 
         if (power_data is not None) and power_data[0] != 0 and power_data[1] != 0:
             self.draw_energy_consumption(power_data)
-            print("Power data displayed. {power_data}")
+            logger.debug("Power data displayed. {power_data}")
         else:
-            print("Power data is not available; skipping energy consumption display.")
+            logger.warning("Power data is not available; skipping energy consumption display.")
+            
+        if env_temps is not None:
+            self.draw_env_temps(env_temps)
+        else:
+            logger.warning("Environment data is not available; skipping environment display.")
 
         self.draw_clock()
         self.i75.update()
@@ -182,8 +316,8 @@ class DisplayManager:
         spacing = 1  # Set character spacing
         text_width = self.graphics.measure_text(text, scale=scale, spacing=spacing)
 
-        print(f"Text width: {text_width}")
-        print(f"Display width: {self.width}")
+        logger.debug(f"Text width: {text_width}")
+        logger.debug(f"Display width: {self.width}")
 
         x = int(self.width / 2) - int(text_width / 2)  # Center horizontally
         y = int(self.height / 2) - int(self.graphics.measure_text("A", scale=scale, spacing=spacing) / 2) - 2  # Center vertically
@@ -209,28 +343,28 @@ class DataFetcher:
         while retries < self.max_retries:
             try:
                 gc.collect()
-                print(f"Attempt {retries + 1} to connect to {host}:{port}")
+                logger.debug(f"Attempt {retries + 1} to connect to {host}:{port}")
 
                 # Check if connected to Wi-Fi
                 if not self.wlan.isconnected():
-                    print("Wi-Fi is not connected. Attempting to reconnect.")
+                    logger.warning("Wi-Fi is not connected. Attempting to reconnect.")
                     # Attempt to reconnect
                     # Since WiFiConnection manages the connection, you may need to handle reconnection here
                     raise Exception("Wi-Fi is not connected.")
                 
                 s = socket.socket()
                 s.settimeout(1000)
-                print("Socket created")
+                logger.debug("Socket created")
                 try:
                     s.connect((host, port))
                 except OSError as e:
-                    print(f"OSError during connect: {e}")
+                    logger.error(f"OSError during connect: {e}")
                     #s.close()
                     #retries += 1
                     #print(f"Retrying in {self.retry_delay} seconds...")
                     #time.sleep(self.retry_delay)
                     #continue
-                print(f"Connected to {host}:{port}")
+                logger.debug(f"Connected to {host}:{port}")
                 json_data = b''
 
                 while True:
@@ -241,49 +375,49 @@ class DataFetcher:
                             break
                         json_data += chunk
                     except OSError as e:
-                        print(f"OSError during recv: {e}")
+                        logger.error(f"OSError during recv: {e}")
                         break
                 s.close()
-                print("Socket closed")
+                logger.debug("Socket closed")
 
                 if not json_data:
-                    print("Received empty data.")
+                    logger.warning("Received empty data.")
                     return None
-                print(f"Received data: {json_data}")
+                logger.debug(f"Received data: {json_data}")
                 try:
                     parsed_data = json.loads(json_data.decode("utf-8"))
-                    print(f"Parsed data: {parsed_data}")
+                    logger.debug(f"Parsed data: {parsed_data}")
                     return parsed_data
                 except ValueError as e:
-                    print(f"JSON decoding error: {e}")
-                    print(f"Data received: {json_data}")
+                    logger.error(f"JSON decoding error: {e}")
+                    logger.debug(f"Data received: {json_data}")
                     return None
             except Exception as e:
-                print(f"Exception occurred: {e}")
-                print(f"Type of exception: {type(e)}")
-                print(f"Exception args: {e.args}")
+                logger.error(f"Exception occurred: {e}")
+                logger.error(f"Type of exception: {type(e)}")
+                logger.error(f"Exception args: {e.args}")
                 # Map error code if possible
                 if isinstance(e, OSError) and e.args:
                     error_code = e.args[0]
-                    print(f"Error code: {error_code}")
+                    logger.debug(f"Error code: {error_code}")
                     if error_code == errno.ECONNREFUSED:
-                        print("Connection refused.")
+                        logger.warning("Connection refused.")
                     elif error_code == errno.ETIMEDOUT:
-                        print("Connection timed out.")
+                        logger.warning("Connection timed out.")
                     elif error_code == errno.EHOSTUNREACH:
-                        print("No route to host.")
+                        logger.warning("No route to host.")
                     else:
-                        print(f"Unknown error code: {error_code}")
+                        logger.error(f"Unknown error code: {error_code}")
                 else:
-                    print("An unexpected error occurred during socket connection.")
+                    logger.error("An unexpected error occurred during socket connection.")
                 retries += 1
-                print(f"Retrying in {self.retry_delay} seconds...")
+                logger.warning(f"Retrying in {self.retry_delay} seconds...")
                 time.sleep(self.retry_delay)
-        print(f"Failed to connect to {host}:{port} after {self.max_retries} attempts.")
+        logger.error(f"Failed to connect to {host}:{port} after {self.max_retries} attempts.")
         return None
 
     def wifi_get_data(self, host, port, data_format):
-        print(f"Attempting to fetch data from {host}:{port} with format {data_format}")
+        logger.debug(f"Attempting to fetch data from {host}:{port} with format {data_format}")
         data = self.connect_and_receive_data(host, port)
         if data is not None:
             try:
@@ -292,6 +426,12 @@ class DataFetcher:
                         int(data.get("T1P", 0)),
                         int(data.get("T2P", 0)),
                         int(data.get("T3P", 0)),
+                    ]
+                    return rearranged_data
+                elif data_format == "ENV_TEMPS":
+                    rearranged_data = [
+                        float(data.get("TOUT", 0)),
+                        float(data.get("BRT1", 0)),
                     ]
                     return rearranged_data
                 elif data_format == "SYSTEM_STATUS":
@@ -310,13 +450,13 @@ class DataFetcher:
                     formatted_data = [int(rearranged_data[0] * 1000), int(rearranged_data[1] * 1000)]
                     return formatted_data
                 else:
-                    print("Unsupported data format")
+                    logger.error("Unsupported data format")
                     return None
             except (ValueError, TypeError) as e:
-                print(f"Error processing data: {e}")
+                logger.error(f"Error processing data: {e}")
                 return None
         else:
-            print(f"No data received for {data_format}.")
+            logger.error(f"No data received for {data_format}.")
             return None
 
 class MainApp:
@@ -326,12 +466,18 @@ class MainApp:
     ENERGY_PORT = 45140
 
     def __init__(self):
+        logger.set_log_level(Logger.LOG_LEVEL_WARNING)  # Options: LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARNING, LOG_LEVEL_ERROR
+    
+        # Initialize the display    
         self.i75 = Interstate75(display=DISPLAY_INTERSTATE75_64X32, panel_type=Interstate75.PANEL_FM6126A)
         self.graphics = self.i75.display
         self.display_manager = DisplayManager(self.i75, self.graphics)
-        print(f"Display width: {self.i75.width}")
-        print(f"Display height: {self.i75.height}")
+        logger.info(f"Display width: {self.i75.width}")
+        logger.info(f"Display height: {self.i75.height}")
+        
+        # Initialize WiFi connection
         self.wifi_connection = WiFiConnection(max_retries=5, timeout=10)
+        
         # Initialize data fetcher without wlan; we'll set it after connecting
         self.data_fetcher = None
 
@@ -367,9 +513,9 @@ class MainApp:
     def set_rtc_sweden_time(self):
         try:
             # Sync time with NTP server to get accurate UTC time
-            print("Setting RTC time using NTP...")
+            logger.info("Setting RTC time using NTP...")
             ntptime.settime()
-            print("NTP time set.")
+            logger.info("NTP time set.")
 
             # Get current time in UTC
             year, month, mday, hour, minute, second, weekday, yearday = utime.localtime()
@@ -389,9 +535,9 @@ class MainApp:
             # Set the RTC to the adjusted local time
             rtc = machine.RTC()
             rtc.datetime((adjusted_time[0], adjusted_time[1], adjusted_time[2], adjusted_time[6], adjusted_time[3], adjusted_time[4], adjusted_time[5], 0))
-            print(f"RTC set to local time: {adjusted_time}")
+            logger.info(f"RTC set to local time: {adjusted_time}")
         except Exception as e:
-            print(f"Error setting RTC time: {e}")
+            logger.error(f"Error setting RTC time: {e}")
 
     def main(self):
         self.i75.set_led(255, 0, 0)
@@ -399,7 +545,7 @@ class MainApp:
 
         wlan = self.wifi_connection.connect()
         if wlan is None:
-            print("WiFi connection failed. Exiting.")
+            logger.error("WiFi connection failed. Exiting.")
             self.i75.set_led(255, 0, 0)  # Set LED to red to indicate failure
             return
 
@@ -411,48 +557,58 @@ class MainApp:
 
         try:
             while True:
-                print("Fetching tank levels...")
+                logger.info("Fetching tank levels...")
                 tank_levels = self.data_fetcher.wifi_get_data(
                     self.SERVER_IP, self.TANK_TEMPS_PORT, data_format="TANK_TEMPS"
                 )
-                print("tank_levels:", tank_levels)
+                logger.debug("tank_levels:", tank_levels)
+                
+                logger.info("Fetching tank levels...")
+                env_temps = self.data_fetcher.wifi_get_data(
+                    self.SERVER_IP, self.TANK_TEMPS_PORT, data_format="ENV_TEMPS"
+                )
+               
+                logger.debug("Environment:", env_temps)
 
-                print("Fetching bp_status...")
+                logger.info("Fetching bp_status...")
                 bp_status = self.data_fetcher.wifi_get_data(
                     self.SERVER_IP, self.STATUS_PORT, data_format="SYSTEM_STATUS"
                 )
-                print("bp_status:", bp_status)
+                logger.debug("bp_status:", bp_status)
 
-                print("Fetching power data...")
-                power_data = self.data_fetcher.wifi_get_data(
-                    self.SERVER_IP, self.ENERGY_PORT, data_format="ELECTRIC_POWER"
-                )
-                print("power_data:", power_data)
+                #print("Fetching power data...")
+                #power_data = self.data_fetcher.wifi_get_data(
+                #    self.SERVER_IP, self.ENERGY_PORT, data_format="ELECTRIC_POWER"
+                #)
+                #print("power_data:", power_data)
 
                 # We only skip the update if tank levels or bp_status are missing
                 if None in (tank_levels, bp_status):
-                    print("Essential data missing, skipping update.")
+                    logger.warning("Essential data missing, skipping update.")
                     time.sleep(5)
                     continue
 
                 # It's acceptable if power_data is None; we handle it in the display
-                if power_data is None:
-                    print("Power data not received; proceeding without it.")
+                #if power_data is None:
+                #    print("Power data not received; proceeding without it.")
 
-                print(f"Tank Levels: {tank_levels}")
-                print(f"BP Status: {bp_status}")
-                print(f"Power Data: {power_data}")
+                logger.debug(f"Tank Levels: {tank_levels}")
+                logger.debug(f"BP Status: {bp_status}")
+                logger.debug(f"Environment: {env_temps}")
+                #print(f"Power Data: {power_data}")
+                
+                power_data = [0, 0] # Placeholder for power data until hw is fixed
 
-                self.display_manager.update_display(tank_levels, bp_status, power_data)
-                print("Display updated.")
-                print("Free memory before GC:", gc.mem_free(), "bytes")
+                self.display_manager.update_display(tank_levels, bp_status, power_data, env_temps)
+                logger.debug("Display updated.")
+                logger.debug("Free memory before GC:", gc.mem_free(), "bytes")
                 gc.collect()
-                print("Free memory after GC:", gc.mem_free(), "bytes")
+                logger.debug("Free memory after GC:", gc.mem_free(), "bytes")
                 self.i75.set_led(0, 10, 0)
                 time.sleep(5)
                 self.i75.set_led(0, 0, 0)
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.error(f"An error occurred: {e}")
         finally:
             wlan.disconnect()
             wlan.active(False)
