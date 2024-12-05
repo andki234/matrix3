@@ -46,7 +46,7 @@ import setproctitle                     # For customizing process title
 from pushbullet import Pushbullet       # Using Pushbullet to send notifications to phone
 
 # Set to appropriate value to enable/disabled logging
-LOGGING_LEVEL = logging.WARNING
+LOGGING_LEVEL = logging.DEBUG
 USE_PUSHBULLET = False
 
 

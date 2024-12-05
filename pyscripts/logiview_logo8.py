@@ -11,12 +11,13 @@ import requests
 import sys
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 
 # Import third-party libraries
 import mysql.connector
 from mysql.connector import errorcode
+from mysql.connector import pooling
 import setproctitle
 import snap7
 from snap7.util import set_bool, get_bool
@@ -31,7 +32,7 @@ setproctitle.setproctitle("logiview_logo8")
 
 # Constants
 LOGGING_LEVEL = logging.DEBUG
-USE_PUSHBULLET = False
+USE_PUSHBULLET = True
 SNAP7_LOG = True
 
 # Flask and SocketIO setup
@@ -44,8 +45,8 @@ PUMP_ON_DELAY = 5    # cycles delay before turning pump on
 PUMP_OFF_DELAY = 5   # cycles delay before turning pump off
 
 # Pump minimum run time and off time in cycles
-PUMP_MIN_ON_TIME = 10   # Pump must run for at least 10 cycles once started
-PUMP_MIN_OFF_TIME = 10  # Pump must stay off for at least 10 cycles once stopped
+PUMP_MIN_ON_TIME = 100   # Pump must run for at least 10 cycles once started
+PUMP_MIN_OFF_TIME = 100  # Pump must stay off for at least 10 cycles once stopped
 
 # Temperature Thresholds with hysteresis
 BOILER_OVERHEAT_THRESHOLD = 8700  # 87.00°C
@@ -118,18 +119,18 @@ class Pushbullet:
             "body": body
         }
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=10)
             if response.status_code == 200:
                 self.logger.debug(f"Notification sent successfully: {titlemsg} {body}")
             else:
                 self.logger.error(f"Failed to send notification: {titlemsg} {body} - Status Code: {response.status_code}")
-        except Exception as e:
+        except requests.RequestException as e:
             self.logger.error(f"Exception occurred while sending Pushbullet notification: {e}")
 
 # Logger class for handling logging
 class LoggerClass:
     def __init__(self, logging_level=logging.WARNING):
-        self.logger = self.setup_logging(logging_level = logging_level)
+        self.logger = self.setup_logging(logging_level=logging_level)
         # Expose logging functions
         self.debug = self.logger.debug
         self.info = self.logger.info
@@ -189,10 +190,12 @@ class PumpStatus:
     WDT: bool = None
 
 # Function to get temperature value from the database
-def get_temperature_value(cnx, cursor, column_name, logger):
+def get_temperature_value(cnx_pool, column_name, logger):
     sql_str = (
         f"SELECT {column_name} FROM logiview.tempdata ORDER BY datetime DESC LIMIT 1")
     try:
+        cnx = cnx_pool.get_connection()
+        cursor = cnx.cursor()
         # Execute the SQL statement and fetch the temperature data
         cursor.execute(sql_str)
         # Fetch the all data from database
@@ -206,20 +209,25 @@ def get_temperature_value(cnx, cursor, column_name, logger):
             return None
     except mysql.connector.Error as err:
         logger.error(f"Database error: {err}")
-        cnx.rollback()  # Roll back the transaction in case of error
         return None
+    finally:
+        cursor.close()
+        cnx.close()
 
 # LogoPlcHandler class is used to read and write to the Logo8 PLC
 class LogoPlcHandler:
     def __init__(self, logger, address):
+        self.logger = logger
+        self.address = address
+        self.connect()
+
+    def connect(self):
         try:
             self.plc = snap7.logo.Logo()
-            self.plc.connect(address, 0, 2)
-            self.logger = logger
-            self.logger.info(f"Connected to PLC at {address}")
+            self.plc.connect(self.address, 0, 2)
+            self.logger.info(f"Connected to PLC at {self.address}")
         except Exception as e:
-            print(f"Error during initialization: {e}")
-            logger.error(f"Error during PLC initialization: {e}")
+            self.logger.error(f"Error during PLC initialization: {e}")
             raise
 
     def write_bit(self, vm_address, bit_position, value):
@@ -234,12 +242,14 @@ class LogoPlcHandler:
             else:
                 byte_data[0] &= ~(1 << bit_position)
 
-            # If the plc.write method expects an integer, convert back
+            # Convert back to bytes
             byte_data_int = byte_data[0]
 
             self.plc.write(vm_address, byte_data_int)
         except Exception as e:
             self.logger.error(f"Error writing bit at {vm_address}.{bit_position}: {e}")
+            # Attempt to reconnect
+            self.reconnect()
             raise
 
     def read_bit(self, vm_address, bit_position):
@@ -254,7 +264,18 @@ class LogoPlcHandler:
             return bool(bit_value)
         except Exception as e:
             self.logger.error(f"Error reading bit at {vm_address}.{bit_position}: {e}")
+            # Attempt to reconnect
+            self.reconnect()
             raise
+
+    def reconnect(self):
+        try:
+            self.logger.info("Attempting to reconnect to PLC...")
+            self.disconnect()
+            time.sleep(2)
+            self.connect()
+        except Exception as e:
+            self.logger.error(f"Failed to reconnect to PLC: {e}")
 
     def disconnect(self):
         try:
@@ -426,9 +447,11 @@ class Algorithm:
         if temp.TRET > RETURNS_TEMP_ON_THRESHOLD:
             pump_start = True
             self.logger.debug("Pump start condition met: TRET > 60.00°C")
-        elif temp.T1BOT <= T1BOT_PUMP_ON_THRESHOLD and temp.TRET > (temp.T3BOT + RET_MINUS_T3BOT_THRESHOLD):
-            pump_start = True
-            self.logger.debug("Pump start condition met: T1BOT <= 58.00°C and TRET > T3BOT + 2.00°C")
+        else:
+            self.logger.debug(f"{temp.T1BOT} >= {T1BOT_PUMP_ON_THRESHOLD}°C and {temp.T1MID} > {temp.T2TOP} + {TEMP_DIFF_ON_THRESHOLD}°C")
+            if temp.T1BOT >= T1BOT_PUMP_ON_THRESHOLD and temp.T1MID > (temp.T2TOP + TEMP_DIFF_ON_THRESHOLD):
+                pump_start = True
+                self.logger.debug("Pump start condition met: T1BOT <= 60.00°C and T1MID > T2MID + 5.00°C")
 
         # Pump Stop Conditions
         pump_stop = False
@@ -527,8 +550,12 @@ class Algorithm:
         The transfer occurs if Tank 2 has more energy than Tank 1.
         """
         # Calculate average temperatures for each tank using available sensors
-        tank1_avg_temp = (temp.T1TOP + temp.T1MID + temp.T1BOT) / 300 if None not in (temp.T1TOP, temp.T1MID, temp.T1BOT) else None
-        tank2_avg_temp = (temp.T2TOP + temp.T2MID + temp.T2BOT) / 300 if None not in (temp.T2TOP, temp.T2MID, temp.T2BOT) else None
+        try:
+            tank1_avg_temp = (temp.T1TOP + temp.T1MID + temp.T1BOT) / 300 if None not in (temp.T1TOP, temp.T1MID, temp.T1BOT) else None
+            tank2_avg_temp = (temp.T2TOP + temp.T2MID + temp.T2BOT) / 300 if None not in (temp.T2TOP, temp.T2MID, temp.T2BOT) else None
+        except TypeError as e:
+            self.logger.error(f"Error calculating average temperatures: {e}")
+            return False
 
         if tank1_avg_temp is None or tank2_avg_temp is None:
             self.logger.warning("Insufficient temperature data to calculate average temperatures.")
@@ -582,32 +609,26 @@ class MainClass:
                 self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error during initialization: {e}")
             exit_program(self.logger, self.pushbullet, exit_code=1, message="Error during initialization")
 
-        # Connect to the MySQL server
+        # Set up a MySQL connection pool
         try:
-            self.cnx = mysql.connector.connect(
+            self.cnx_pool = mysql.connector.pooling.MySQLConnectionPool(
+                pool_name="mypool",
+                pool_size=5,
                 user=self.parser.user,
                 password=self.parser.password,
                 host=self.parser.host,
-                database="logiview",  # Assuming you always connect to this database
+                database="logiview",
+                connect_timeout=10
             )
             self.logger.info("Successfully connected to the MySQL server!")
-            # Create a cursor to execute SQL statements.
-            self.cursor = self.cnx.cursor(buffered=False)
-
         except mysql.connector.Error as err:
-            if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
-                self.logger.error("MySQL connection error: Incorrect username or password")
-                if self.pushbullet is not None:
-                    self.pushbullet.push_note("ERROR: LogiView LOGO8", "MySQL connection error: Incorrect username or password")
-            elif err.errno == mysql.connector.errorcode.ER_BAD_DB_ERROR:
-                self.logger.error("MySQL connection error: Database does not exist")
-                if self.pushbullet is not None:
-                    self.pushbullet.push_note("ERROR: LogiView LOGO8", "MySQL connection error: Database does not exist")
-            else:
-                self.logger.error(f"MySQL connection error: {err}")
-                if self.pushbullet is not None:
-                    self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: {err}")
+            self.logger.error(f"MySQL connection error: {err}")
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: {err}")
             exit_program(self.logger, self.pushbullet, exit_code=1, message="MySQL connection error")
+
+        # Initialize last data timestamp
+        self.last_data_timestamp = datetime.now()
 
     def start_flask_app(self):
         try:
@@ -617,7 +638,7 @@ class MainClass:
                 self.app,
                 host='0.0.0.0',
                 port=5000,
-                debug=True,
+                debug=False,
                 use_reloader=False  # Disable reloader if running in a separate thread
             )
         except Exception as e:
@@ -635,16 +656,49 @@ class MainClass:
             exit_program(self.logger, self.pushbullet, exit_code=1, message="Flask server failed to start.")
 
     def update_status_in_db(self, column_name, value):
+        sql_str = f"UPDATE logiview.tempdata SET {column_name} = {int(value)} ORDER BY datetime DESC LIMIT 1"
         try:
-            sql_str = f"UPDATE logiview.tempdata SET {column_name} = {int(value)} ORDER BY datetime DESC LIMIT 1"
-            self.cursor.execute(sql_str)
-            self.cnx.commit()
+            cnx = self.cnx_pool.get_connection()
+            cursor = cnx.cursor()
+            cursor.execute(sql_str)
+            cnx.commit()
             self.logger.debug(f"Updated {column_name} with value {value} in the database")
         except mysql.connector.Error as err:
             self.logger.error(f"Database error while updating status: {err}")
             if self.pushbullet is not None:
                 self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Database error while updating status: {err}")
-            self.cnx.rollback()
+        finally:
+            cursor.close()
+            cnx.close()
+
+    def check_data_timestamp(self):
+        """
+        Checks if data has been added to the database in the last 5 minutes.
+        """
+        sql_str = "SELECT MAX(datetime) FROM logiview.tempdata"
+        try:
+            cnx = self.cnx_pool.get_connection()
+            cursor = cnx.cursor()
+            cursor.execute(sql_str)
+            result = cursor.fetchone()
+            if result and result[0]:
+                last_entry_time = result[0]
+                current_time = datetime.now()
+                time_diff = current_time - last_entry_time
+                self.logger.debug(f"Last data timestamp: {last_entry_time}, Current time: {current_time}, Time diff: {time_diff}")
+                if time_diff > timedelta(minutes=5):
+                    self.logger.warning("No data has been added to the database for over 5 minutes.")
+                    if self.pushbullet is not None:
+                        self.pushbullet.push_note("WARNING: LogiView LOGO8", "No data has been added to the database for over 5 minutes.")
+            else:
+                self.logger.warning("Unable to retrieve last data timestamp from the database.")
+        except mysql.connector.Error as err:
+            self.logger.error(f"Database error while checking data timestamp: {err}")
+            if self.pushbullet is not None:
+                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Database error while checking data timestamp: {err}")
+        finally:
+            cursor.close()
+            cnx.close()
 
     def main_loop(self):
         # Create a Logo8 PLC handler
@@ -658,12 +712,24 @@ class MainClass:
 
             while True:
                 # Read temperature values
+                data_available = True
                 for temp_name in TEMP_COLUMNS:
-                    value = get_temperature_value(self.cnx, self.cursor, temp_name, self.logger)
+                    value = get_temperature_value(self.cnx_pool, temp_name, self.logger)
                     if value is not None:
                         setattr(self.temp, temp_name, value)
                     else:
                         self.logger.error(f"Failed to retrieve temperature value for {temp_name}")
+                        data_available = False
+
+                if data_available:
+                    self.last_data_timestamp = datetime.now()
+                else:
+                    self.logger.warning("Incomplete temperature data. Using last known values.")
+
+                # Check if data has been added to the database for the last 5 minutes
+                if datetime.now() - self.last_data_timestamp > timedelta(minutes=5):
+                    self.check_data_timestamp()
+                    self.last_data_timestamp = datetime.now()  # Update to prevent multiple notifications
 
                 # Reading from virtual inputs from logo8
                 try:
@@ -696,8 +762,6 @@ class MainClass:
         except KeyboardInterrupt:
             self.logger.info("Received a keyboard interrupt. Shutting down gracefully...")
             plc_handler.disconnect()
-            if self.cnx.is_connected():
-                self.cnx.close()
             exit_program(self.logger, self.pushbullet, exit_code=0, message="Received a keyboard interrupt. Shutting down gracefully")
         except SystemExit as e:
             sys.stderr = self.logger.original_stderr  # Reset stderr to its original value
@@ -745,7 +809,7 @@ def index():
 # Main function
 def main():
     # Create logger
-    logger = LoggerClass(logging_level = LOGGING_LEVEL)
+    logger = LoggerClass(logging_level=LOGGING_LEVEL)
     
     # Parse command-line arguments
     parser = Parser(logger)
