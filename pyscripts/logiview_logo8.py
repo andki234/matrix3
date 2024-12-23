@@ -1,113 +1,104 @@
-# Ensure eventlet monkey patching is done at the very beginning
+"""
+app.py - Example of a complete Flask+Socket.IO application 
+         that reads from MySQL, connects to a Siemens Logo! PLC,
+         applies two rules, and displays data + rule logic on a web dashboard.
+"""
+
+# Ensure eventlet monkey patching at the very start
 import eventlet
 eventlet.monkey_patch()
 
-# Import standard libraries
+# Standard libraries
 import argparse
 import io
 import logging
 import logging.handlers
-import requests
 import sys
 import time
 import traceback
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-# Import third-party libraries
+# Third-party libraries
 import mysql.connector
-from mysql.connector import errorcode
 from mysql.connector import pooling
-import setproctitle
+import requests
 import snap7
-from snap7.util import set_bool, get_bool
+from snap7.logo import Logo
+import setproctitle
 
-# Import Flask and SocketIO
+# Flask + Socket.IO
 from flask import Flask, render_template
 from flask_socketio import SocketIO
+
 import threading
 
-# Set process title
+# Set process title (optional)
 setproctitle.setproctitle("logiview_logo8")
 
-# Constants
+# --- CONSTANTS & CONFIG ---
+
 LOGGING_LEVEL = logging.DEBUG
 USE_PUSHBULLET = True
-SNAP7_LOG = True
 
-# Flask and SocketIO setup
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your_secret_key'  # Replace with a secure secret key
-socketio = SocketIO(app, async_mode='eventlet', logger=True, engineio_logger=True)
-
-# Constants (Define these based on your system requirements)
-PUMP_ON_DELAY = 5    # cycles delay before turning pump on
-PUMP_OFF_DELAY = 5   # cycles delay before turning pump off
-
-# Pump minimum run time and off time in cycles
-PUMP_MIN_ON_TIME = 100   # Pump must run for at least 10 cycles once started
-PUMP_MIN_OFF_TIME = 100  # Pump must stay off for at least 10 cycles once stopped
-
-# Temperature Thresholds with hysteresis
+# Example threshold constants (in hundredths of a degree)
 BOILER_OVERHEAT_THRESHOLD = 8700  # 87.00°C
 BOILER_SAFE_THRESHOLD = 8500      # 85.00°C
-CRITICAL_TANK_TEMP = 9000         # 90.00°C
+CRITICAL_TANK_TEMP = 8000         # 80.00°C
 RETURNS_TEMP_ON_THRESHOLD = 6000  # 60.00°C
 RETURNS_TEMP_OFF_THRESHOLD = 5800 # 58.00°C
-T1BOT_PUMP_ON_THRESHOLD = 5800    # 58.00°C
-T1BOT_PUMP_OFF_THRESHOLD = 6000   # 60.00°C
 TEMP_DIFF_ON_THRESHOLD = 500      # 5.00°C
 TEMP_DIFF_OFF_THRESHOLD = 300     # 3.00°C
-RET_MINUS_T3BOT_THRESHOLD = 200   # 2.00°C
-T3_MAX_TEMP = 7000                # 70.00°C
 
-# Setting up temperature columns to be fetched from MySQL
-TEMP_COLUMNS = [
-    "T1TOP",
-    "T1MID",
-    "T1BOT",
-    "T2TOP",
-    "T2MID",
-    "T2BOT",
-    "T3TOP",
-    "T3MID",
-    "T3BOT",
-    "TRET",
-    "TBTOP"
-]
+# Pump Delays & Minimum Times (in cycles)
+PUMP_ON_DELAY = 5
+PUMP_OFF_DELAY = 5
+PUMP_MIN_ON_TIME = 200
+PUMP_MIN_OFF_TIME = 100
 
-# Setting up data columns to get data from PLC and send to MySQL if set to true.
-STATUS_COLUMNS = [
-    ("BP", True),
-    ("PT2T1", True),
-    ("PT1T2", True),
-    ("WDT", False)
-]
-
-# Specific heat capacity of water in Wh/(L·°C)
 SPECIFIC_HEAT_CAPACITY = 1.16
 
-# Function to exit the program with an error message
-def exit_program(logger, pushbullet, exit_code=1, message="Exiting program"):
+# MySQL columns for temperature readings
+TEMP_COLUMNS = [
+    "T1TOP", "T1MID", "T1BOT",
+    "T2TOP", "T2MID", "T2BOT",
+    "T3TOP", "T3MID", "T3BOT",
+    "TRET", "TBTOP"
+]
+
+# Create Flask app + SocketIO
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'my_secret_key'
+socketio = SocketIO(app, async_mode='eventlet', logger=True, engineio_logger=True)
+
+
+# --- HELPER CLASSES ---
+
+def exit_program(logger, pushbullet=None, exit_code=1, message="Exiting"):
+    """
+    Safely exit the program with optional push notification and logging.
+    """
     if exit_code == 0:
         logger.warning(message)
     else:
         logger.error(message)
-    if pushbullet is not None:
-        pushbullet.push_note("ERROR: LogiView LOGO8", message)
+    if pushbullet and USE_PUSHBULLET:
+        pushbullet.push_note("LogiView LOGO8 Exit", message)
     sys.exit(exit_code)
 
-# Pushbullet class for sending notifications
+
 class Pushbullet:
+    """
+    Simple wrapper for sending Pushbullet notifications.
+    """
     def __init__(self, logger, api_key):
-        self.api_key = api_key
         self.logger = logger
+        self.api_key = api_key
 
     def push_note(self, title, body):
-        # Add timestamp to title
-        timestamp = datetime.now().strftime("%y-%m-%d %H:%M")  # Timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         titlemsg = f"{title} [{timestamp}]"
-        
+
         url = "https://api.pushbullet.com/v2/pushes"
         headers = {
             "Access-Token": self.api_key,
@@ -121,55 +112,65 @@ class Pushbullet:
         try:
             response = requests.post(url, headers=headers, json=data, timeout=10)
             if response.status_code == 200:
-                self.logger.debug(f"Notification sent successfully: {titlemsg} {body}")
+                self.logger.debug(f"Pushbullet sent: {titlemsg} / {body}")
             else:
-                self.logger.error(f"Failed to send notification: {titlemsg} {body} - Status Code: {response.status_code}")
+                self.logger.error(
+                    f"Pushbullet error (status {response.status_code}): {titlemsg}"
+                )
         except requests.RequestException as e:
-            self.logger.error(f"Exception occurred while sending Pushbullet notification: {e}")
+            self.logger.error(f"Pushbullet request exception: {e}")
 
-# Logger class for handling logging
+
 class LoggerClass:
-    def __init__(self, logging_level=logging.WARNING):
-        self.logger = self.setup_logging(logging_level=logging_level)
-        # Expose logging functions
+    """
+    Central logger setup (syslog + console). Captures stderr for better error messages.
+    """
+    def __init__(self, logging_level=logging.INFO):
+        self.logger = self.setup_logging(logging_level)
         self.debug = self.logger.debug
         self.info = self.logger.info
         self.warning = self.logger.warning
         self.error = self.logger.error
         self.critical = self.logger.critical
-        self.logger.debug("Logger initialized successfully")
-        
-    def setup_logging(self, logging_level=logging.WARNING):
-        try:
-            # Setting up the logging
-            logger = logging.getLogger('logiview_logo8')
-            logger.setLevel(logging_level)
 
-            # For syslog
+    def setup_logging(self, logging_level):
+        try:
+            logger = logging.getLogger("logiview_logo8")
+            logger.setLevel(logging_level)
+            logger.propagate = False  # Avoid duplicated logs
+
+            # Syslog handler
             syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-            syslog_format = logging.Formatter('%(name)s[%(process)d]: %(levelname)s - %(message)s')
+            syslog_format = logging.Formatter(
+                "%(name)s[%(process)d]: %(levelname)s - %(message)s"
+            )
             syslog_handler.setFormatter(syslog_format)
             logger.addHandler(syslog_handler)
 
-            # For console
+            # Console handler
             console_handler = logging.StreamHandler()
-            console_format = logging.Formatter('%(levelname)s - %(message)s')
+            console_format = logging.Formatter("%(levelname)s - %(message)s")
             console_handler.setFormatter(console_format)
             logger.addHandler(console_handler)
 
-            # Create an in-memory text stream to capture stderr
+            # Capture stderr
             captured_output = io.StringIO()
             self.original_stderr = sys.stderr
-            sys.stderr = captured_output  # Redirect stderr to captured_output
+            sys.stderr = captured_output
 
+            logger.debug("Logger initialized.")
             return logger
+
         except Exception as e:
-            print(f"Exception in setting up logger: {e}")
+            print(f"Error setting up logger: {e}")
             return None
 
-# Define data classes for temperatures and status
+
 @dataclass
 class TemperatureReadings:
+    """
+    Holds temperature data from the DB.
+    """
     T1TOP: int = None
     T1MID: int = None
     T1BOT: int = None
@@ -182,136 +183,149 @@ class TemperatureReadings:
     TRET: int = None
     TBTOP: int = None
 
+
 @dataclass
 class PumpStatus:
+    """
+    Holds boolean status for each pump read from the PLC.
+    """
     BP: bool = None
     PT2T1: bool = None
     PT1T2: bool = None
     WDT: bool = None
 
-# Function to get temperature value from the database
-def get_temperature_value(cnx_pool, column_name, logger):
-    sql_str = (
-        f"SELECT {column_name} FROM logiview.tempdata ORDER BY datetime DESC LIMIT 1")
-    try:
-        cnx = cnx_pool.get_connection()
-        cursor = cnx.cursor()
-        # Execute the SQL statement and fetch the temperature data
-        cursor.execute(sql_str)
-        # Fetch the all data from database
-        sqldata = cursor.fetchall()
-        if sqldata and sqldata[0][0] is not None:
-            logger.debug(f"Retrieved value for {column_name}: {sqldata[0][0]}")
-            cnx.rollback()  # Need to roll back the transaction even if there is no error
-            return int(sqldata[0][0])
-        else:
-            logger.error(f"No data found for {column_name}")
-            return None
-    except mysql.connector.Error as err:
-        logger.error(f"Database error: {err}")
-        return None
-    finally:
-        cursor.close()
-        cnx.close()
 
-# LogoPlcHandler class is used to read and write to the Logo8 PLC
+def get_temperature_value(cnx_pool, column_name, logger):
+    """
+    Fetch latest reading from the DB for the given column.
+    """
+    sql = f"SELECT {column_name} FROM logiview.tempdata ORDER BY datetime DESC LIMIT 1"
+    try:
+        with cnx_pool.get_connection() as cnx:
+            with cnx.cursor() as cursor:
+                cursor.execute(sql)
+                result = cursor.fetchone()
+                if result and result[0] is not None:
+                    val = int(result[0])
+                    logger.debug(f"Got {column_name}={val}")
+                    cnx.rollback()
+                    return val
+                else:
+                    logger.error(f"No data or NULL for {column_name}")
+                    return None
+    except mysql.connector.Error as err:
+        logger.error(f"DB error reading {column_name}: {err}")
+        return None
+
+
 class LogoPlcHandler:
-    def __init__(self, logger, address):
+    """
+    Manages read/write to the Siemens Logo! PLC via snap7.
+    """
+    def __init__(self, logger, plc_address):
         self.logger = logger
-        self.address = address
+        self.plc_address = plc_address
+        self.plc = Logo()
         self.connect()
 
     def connect(self):
         try:
-            self.plc = snap7.logo.Logo()
-            self.plc.connect(self.address, 0, 2)
-            self.logger.info(f"Connected to PLC at {self.address}")
+            self.plc.connect(self.plc_address, 0, 2)
+            self.logger.info(f"Connected to PLC at {self.plc_address}")
         except Exception as e:
-            self.logger.error(f"Error during PLC initialization: {e}")
-            raise
-
-    def write_bit(self, vm_address, bit_position, value):
-        try:
-            byte_data_int = self.plc.read(vm_address)
-            # Convert integer to byte array
-            byte_data = bytearray([byte_data_int])
-
-            # Set the bit without altering the other bits
-            if value:
-                byte_data[0] |= (1 << bit_position)
-            else:
-                byte_data[0] &= ~(1 << bit_position)
-
-            # Convert back to bytes
-            byte_data_int = byte_data[0]
-
-            self.plc.write(vm_address, byte_data_int)
-        except Exception as e:
-            self.logger.error(f"Error writing bit at {vm_address}.{bit_position}: {e}")
-            # Attempt to reconnect
-            self.reconnect()
+            self.logger.error(f"PLC connect error: {e}")
             raise
 
     def read_bit(self, vm_address, bit_position):
         try:
-            byte_data_int = self.plc.read(vm_address)
-            # Convert integer to byte array
-            byte_data = bytearray([byte_data_int])
-
-            # Retrieve the bit value
-            bit_value = (byte_data[0] >> bit_position) & 1
-
-            return bool(bit_value)
+            data = self.plc.read(vm_address)
+            byte_data = bytearray([data])
+            return bool((byte_data[0] >> bit_position) & 1)
         except Exception as e:
-            self.logger.error(f"Error reading bit at {vm_address}.{bit_position}: {e}")
-            # Attempt to reconnect
+            self.logger.error(f"PLC read_bit error at {vm_address}.{bit_position}: {e}")
+            self.reconnect()
+            raise
+
+    def write_bit(self, vm_address, bit_position, value):
+        try:
+            data = self.plc.read(vm_address)
+            byte_data = bytearray([data])
+            if value:
+                byte_data[0] |= (1 << bit_position)
+            else:
+                byte_data[0] &= ~(1 << bit_position)
+            self.plc.write(vm_address, byte_data[0])
+        except Exception as e:
+            self.logger.error(f"PLC write_bit error at {vm_address}.{bit_position}: {e}")
             self.reconnect()
             raise
 
     def reconnect(self):
         try:
-            self.logger.info("Attempting to reconnect to PLC...")
+            self.logger.info("Attempting PLC reconnect...")
             self.disconnect()
             time.sleep(2)
             self.connect()
         except Exception as e:
-            self.logger.error(f"Failed to reconnect to PLC: {e}")
+            self.logger.error(f"PLC reconnection failed: {e}")
 
     def disconnect(self):
         try:
             self.plc.disconnect()
-            self.logger.info("Disconnected from PLC")
+            self.logger.info("Disconnected from PLC.")
         except Exception as e:
-            self.logger.error(f"Error during PLC disconnection: {e}")
-            raise
+            self.logger.error(f"PLC disconnect error: {e}")
 
-# Algorithm class
+
 class Algorithm:
+    """
+    Holds the logic for controlling pumps based on temperature and status.
+    """
     def __init__(self, plc_handler, logger):
         self.plc_handler = plc_handler
         self.logger = logger
-        # Initialize variables for PT1T2 pump control
+
+        # Pump states + counters
         self.pump_state_PT1T2 = False
         self.pump_runtime_PT1T2 = 0
         self.pump_offtime_PT1T2 = 0
 
-        # Initialize variables for PT2T1 pump control
         self.pump_state_PT2T1 = False
         self.pump_runtime_PT2T1 = 0
         self.pump_offtime_PT2T1 = 0
 
-        # Initialize pumps to OFF
-        self.set_transfer_pump("PT1T2", False)
-        self.set_transfer_pump("PT2T1", False)
-        # State dictionary for monitoring
+        # We’ll define two basic rules with text descriptions
+        self.rules = [
+            {
+                "name": "Rule One (Emergency Overheat Protection)",
+                "description": (
+                    "If TBTOP > 87.00°C, or T1BOT > 80.00°C, or TRET > 60.00°C, "
+                    "then PT1T2 ON to prevent boiler overheating."
+                ),
+                "is_active": False
+            },
+            {
+                "name": "Rule Two (Normal Operation)",
+                "description": (
+                    "If TRET > 60.00°C OR (T1BOT >= 58.00°C and T1MID > T2TOP + 5.00°C), "
+                    "start PT1T2 (after min OFF time). Stop when (T1BOT - T3BOT) <= 3.00°C "
+                    "(after min ON time)."
+                ),
+                "is_active": False
+            }
+        ]
+
+        # Master dictionary used for real-time updates
         self.state = {}
-        # Initialize pump delays
-        self.pump_on_delay = PUMP_ON_DELAY
-        self.pump_off_delay = PUMP_OFF_DELAY
+        # Boolean flags for each rule
         self.rule_one_active = False
         self.rule_two_active = False
 
-        # Tank volumes in liters
+        # Initialize pumps to OFF
+        self.set_transfer_pump("PT1T2", False)
+        self.set_transfer_pump("PT2T1", False)
+
+        # Tank volumes (for advanced logic, if needed)
         self.tank_volumes = {
             'Tank1': 500,
             'Tank2': 750,
@@ -320,7 +334,7 @@ class Algorithm:
 
     def set_transfer_pump(self, pump_name, state):
         """
-        Controls the pump state via PLC handler.
+        Turn pump ON/OFF by writing bit to PLC memory.
         """
         try:
             if pump_name == "PT1T2":
@@ -329,107 +343,97 @@ class Algorithm:
                 self.plc_handler.write_bit(vm_address, bit_position, state)
                 self.pump_state_PT1T2 = state
                 if state:
-                    self.pump_runtime_PT1T2 = 0  # Reset runtime counter
-                    self.pump_on_delay = PUMP_ON_DELAY  # Reset on delay
+                    self.pump_runtime_PT1T2 = 0
                 else:
-                    self.pump_offtime_PT1T2 = 0  # Reset offtime counter
-                    self.pump_off_delay = PUMP_OFF_DELAY  # Reset off delay
-                self.logger.debug(f"Set pump {pump_name} to {'ON' if state else 'OFF'}.")
+                    self.pump_offtime_PT1T2 = 0
             elif pump_name == "PT2T1":
                 vm_address = "V0.0"
                 bit_position = 0
                 self.plc_handler.write_bit(vm_address, bit_position, state)
                 self.pump_state_PT2T1 = state
                 if state:
-                    self.pump_runtime_PT2T1 = 0  # Reset runtime counter
-                    # If there's an on delay for PT2T1, handle it here
+                    self.pump_runtime_PT2T1 = 0
                 else:
-                    self.pump_offtime_PT2T1 = 0  # Reset offtime counter
-                    # If there's an off delay for PT2T1, handle it here
-                self.logger.debug(f"Set pump {pump_name} to {'ON' if state else 'OFF'}.")
-            else:
-                self.logger.error(f"Invalid pump name: {pump_name}")
-                return
+                    self.pump_offtime_PT2T1 = 0
+            self.logger.debug(f"Set pump {pump_name} to {'ON' if state else 'OFF'}")
         except Exception as e:
-            self.logger.error(f"Failed to set pump {pump_name} to {'ON' if state else 'OFF'}: {e}")
+            self.logger.error(f"Failed to set pump {pump_name} to {state}: {e}")
 
     def execute_algorithm(self, temp: TemperatureReadings, status: PumpStatus):
-        self.logger.debug(">>> Executing Algorithm")
-        # Update state for monitoring
-        self.state['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """
+        Main entry for our logic. 
+        Called every loop with updated temp + status.
+        """
+        self.logger.debug(">>> Executing Algorithm.")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Build state dictionary
+        self.state['timestamp'] = now
         self.state['temperatures'] = temp.__dict__
         self.state['statuses'] = status.__dict__
+
         self.state['pump_state_PT1T2'] = self.pump_state_PT1T2
         self.state['pump_runtime_PT1T2'] = self.pump_runtime_PT1T2
         self.state['pump_offtime_PT1T2'] = self.pump_offtime_PT1T2
+
         self.state['pump_state_PT2T1'] = self.pump_state_PT2T1
         self.state['pump_runtime_PT2T1'] = self.pump_runtime_PT2T1
         self.state['pump_offtime_PT2T1'] = self.pump_offtime_PT2T1
-        self.state['rule_one_active'] = self.rule_one_active
-        self.state['rule_two_active'] = self.rule_two_active
 
-        if status.BP:
-            self.logger.debug("Boiler is ON!")
-            self.state['boiler_status'] = "ON"
-            self.boiler_on_algorithm(temp, status)
-        else:
-            self.logger.debug("Boiler is OFF!")
-            self.state['boiler_status'] = "OFF"
-            self.boiler_off_algorithm(temp, status)
+        self.boiler_on_algorithm(temp, status) if status.BP else self.boiler_off_algorithm(temp, status)
 
-        # Emit the updated state to the dashboard
+        # After rules apply, store them in state
+        # We also set is_active for each rule in self.rules
+        self.rules[0]["is_active"] = self.rule_one_active
+        self.rules[1]["is_active"] = self.rule_two_active
+        self.state['rules'] = self.rules
+
+        # Emit updates to the dashboard
         socketio.emit('update', self.state)
 
     def boiler_on_algorithm(self, temp: TemperatureReadings, status: PumpStatus):
         """
-        Handles pump operations when the boiler is ON.
+        If boiler is ON, run the "emergency overheat" rule, then normal rule if no emergency.
         """
-        self.logger.debug("Running Boiler ON Algorithm")
+        self.logger.debug("Boiler ON => Checking rules.")
         self.apply_rule_one(temp, status)
         if not self.rule_one_active:
             self.apply_rule_two(temp, status)
 
     def apply_rule_one(self, temp: TemperatureReadings, status: PumpStatus):
         """
-        Emergency Protection Rule to prevent boiler from overheating.
+        Overheat protection: If TBTOP > 87°C OR T1BOT > 80°C OR TRET > 60°C => PT1T2 ON
         """
-        self.logger.debug("Applying Rule 1: Emergency Protection")
-        # Adjust TBTOP if necessary
-        adjusted_TBTOP = temp.TBTOP + 200  # Assuming calibration adjustment
+        adjusted_tbtop = 0
+        if temp.TBTOP is not None:
+            # Example offset if needed
+            adjusted_tbtop = temp.TBTOP
 
-        # Check for critical conditions
         emergency_condition = (
-            adjusted_TBTOP > BOILER_OVERHEAT_THRESHOLD or
-            temp.T1BOT > CRITICAL_TANK_TEMP or
-            temp.TRET > RETURNS_TEMP_ON_THRESHOLD
+            (adjusted_tbtop > BOILER_OVERHEAT_THRESHOLD if temp.TBTOP is not None else False)
+            or (temp.T1BOT > CRITICAL_TANK_TEMP if temp.T1BOT is not None else False)
+            or (temp.TRET > RETURNS_TEMP_ON_THRESHOLD if temp.TRET is not None else False)
         )
 
-        self.logger.debug(f"Adjusted TBTOP: {adjusted_TBTOP / 100:.2f}°C")
-        self.logger.debug(f"T1BOT: {temp.T1BOT / 100:.2f}°C")
-        self.logger.debug(f"TRET: {temp.TRET / 100:.2f}°C")
-        self.logger.debug(f"Emergency Condition Met: {emergency_condition}")
-
         if emergency_condition:
+            self.rule_one_active = True
+            # Turn on PT1T2 to move heat away
             if not status.PT1T2:
                 self.set_transfer_pump("PT1T2", True)
-                self.rule_one_active = True
-                self.rule_two_active = False
-                self.logger.warning("Emergency: Starting PT1T2 pump to prevent boiler overheating!")
+                self.logger.warning("Rule One triggered: Overheat => PT1T2 ON")
         else:
-            # Check if emergency conditions have cleared
+            # Clear rule if it was active
             if self.rule_one_active:
-                self.logger.debug("Emergency conditions cleared. Preparing to stop PT1T2 pump.")
-                if temp.TRET <= RETURNS_TEMP_OFF_THRESHOLD and adjusted_TBTOP < BOILER_SAFE_THRESHOLD:
-                    # Enforce minimum run time
-                    if self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
-                        self.set_transfer_pump("PT1T2", False)
-                        self.rule_one_active = False
-                        self.logger.info("Emergency: Stopping PT1T2 pump after minimum run time.")
-                    else:
-                        self.logger.debug(f"Waiting for minimum pump runtime: {self.pump_runtime_PT1T2}/{PUMP_MIN_ON_TIME}")
-                else:
-                    self.logger.debug("Emergency conditions still active or minimum runtime not reached.")
-        # Update pump runtime
+                # Check safe conditions to stop pump
+                conditions_cleared = (
+                    (temp.TRET <= RETURNS_TEMP_OFF_THRESHOLD if temp.TRET is not None else False)
+                    and (adjusted_tbtop < BOILER_SAFE_THRESHOLD)
+                )
+                if conditions_cleared and self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
+                    self.set_transfer_pump("PT1T2", False)
+                    self.rule_one_active = False
+                    self.logger.info("Rule One cleared: PT1T2 OFF after safe conditions.")
+        # Update counters
         if self.pump_state_PT1T2:
             self.pump_runtime_PT1T2 += 1
             self.pump_offtime_PT1T2 = 0
@@ -439,177 +443,94 @@ class Algorithm:
 
     def apply_rule_two(self, temp: TemperatureReadings, status: PumpStatus):
         """
-        Main Operational Rule to manage pump based on tank temperatures.
+        Normal operation. 
+        If TRET > 60°C or (T1BOT >= 58.00°C & T1MID > T2TOP + 5°C) => PT1T2 ON (after OFF time).
+        Stop => if (T1BOT - T3BOT) <= 3.00°C after ON time.
         """
-        self.logger.debug("Applying Rule 2: Main Operational Control")
-        # Pump Start Conditions
+        self.rule_two_active = False
+
+        # Check start condition
         pump_start = False
-        if temp.TRET > RETURNS_TEMP_ON_THRESHOLD:
+        if temp.TRET is not None and temp.TRET > RETURNS_TEMP_ON_THRESHOLD:
             pump_start = True
-            self.logger.debug("Pump start condition met: TRET > 60.00°C")
         else:
-            self.logger.debug(f"{temp.T1BOT} >= {T1BOT_PUMP_ON_THRESHOLD}°C and {temp.T1MID} > {temp.T2TOP} + {TEMP_DIFF_ON_THRESHOLD}°C")
-            if temp.T1BOT >= T1BOT_PUMP_ON_THRESHOLD and temp.T1MID > (temp.T2TOP + TEMP_DIFF_ON_THRESHOLD):
-                pump_start = True
-                self.logger.debug("Pump start condition met: T1BOT <= 60.00°C and T1MID > T2MID + 5.00°C")
+            if all(x is not None for x in [temp.T1BOT, temp.T1MID, temp.T2TOP]):
+                if (
+                    temp.T1BOT >= 5800
+                    and (temp.T1MID > (temp.T2TOP + TEMP_DIFF_ON_THRESHOLD))
+                ):
+                    pump_start = True
 
-        # Pump Stop Conditions
+        # Check stop condition
         pump_stop = False
-        temp_diff = temp.T1BOT - temp.T3BOT
-        if temp_diff <= TEMP_DIFF_OFF_THRESHOLD and not pump_start:
-            pump_stop = True
-            self.logger.debug(f"Pump stop condition met: (T1BOT - T3BOT) <= 3.00°C ({temp_diff / 100:.2f}°C)")
+        if all(x is not None for x in [temp.T1BOT, temp.T3BOT]):
+            # If T1BOT - T3BOT <= 3.00°C => stop
+            if (temp.T1BOT - temp.T3BOT) <= TEMP_DIFF_OFF_THRESHOLD:
+                pump_stop = True
 
-        # Handle Pump Start
-        if pump_start and not status.PT1T2 and self.pump_offtime_PT1T2 >= PUMP_MIN_OFF_TIME:
-            if self.pump_on_delay <= 0:
+        # Start pump logic
+        if pump_start and not status.PT1T2:
+            # Must respect min OFF time
+            if self.pump_offtime_PT1T2 >= PUMP_MIN_OFF_TIME:
                 self.set_transfer_pump("PT1T2", True)
+                self.logger.info("Rule Two triggered: PT1T2 ON (normal ops).")
                 self.rule_two_active = True
-                self.pump_off_delay = PUMP_OFF_DELAY  # Reset pump off delay
-                self.logger.info("Starting PT1T2 pump based on Rule 2 conditions.")
-            else:
-                self.pump_on_delay -= 1
-                self.logger.debug(f"Pump on delay countdown: {self.pump_on_delay}")
-        elif pump_start and not status.PT1T2 and self.pump_offtime_PT1T2 < PUMP_MIN_OFF_TIME:
-            self.logger.debug(f"Waiting for minimum off time: {self.pump_offtime_PT1T2}/{PUMP_MIN_OFF_TIME}")
 
-        # Handle Pump Stop
-        if pump_stop and status.PT1T2 and self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
-            if self.pump_off_delay <= 0:
+        # Stop pump logic
+        if pump_stop and status.PT1T2:
+            # Respect min ON time
+            if self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
                 self.set_transfer_pump("PT1T2", False)
-                self.rule_two_active = False
-                self.pump_on_delay = PUMP_ON_DELAY  # Reset pump on delay
-                self.logger.info("Stopping PT1T2 pump based on Rule 2 conditions.")
+                self.logger.info("Rule Two stopping: PT1T2 OFF (temp diff small).")
             else:
-                self.pump_off_delay -= 1
-                self.logger.debug(f"Pump off delay countdown: {self.pump_off_delay}")
-        elif pump_stop and status.PT1T2 and self.pump_runtime_PT1T2 < PUMP_MIN_ON_TIME:
-            self.logger.debug(f"Waiting for minimum run time: {self.pump_runtime_PT1T2}/{PUMP_MIN_ON_TIME}")
+                self.logger.debug(
+                    f"Rule Two: waiting for min ON time: {self.pump_runtime_PT1T2}/{PUMP_MIN_ON_TIME}"
+                )
 
-        self.logger.debug(f"Pump state PT1T2: {self.pump_state_PT1T2} Pump on delay: {self.pump_on_delay}, Pump off delay: {self.pump_off_delay}")   
+        # Mark rule active if PT1T2 is ON and not overridden by rule one
+        if self.pump_state_PT1T2 and not self.rule_one_active:
+            self.rule_two_active = True
 
-        # Update pump runtime and offtime
+        # Update counters
         if self.pump_state_PT1T2:
             self.pump_runtime_PT1T2 += 1
-            self.pump_offtime_PT1T2 = 0  # Reset offtime when pump is running
-            self.logger.debug(f"Pump PT1T2 runtime: {self.pump_runtime_PT1T2}")
+            self.pump_offtime_PT1T2 = 0
         else:
             self.pump_offtime_PT1T2 += 1
-            self.pump_runtime_PT1T2 = 0  # Reset runtime when pump is off
-            self.logger.debug(f"Pump PT1T2 off time: {self.pump_offtime_PT1T2}")
+            self.pump_runtime_PT1T2 = 0
 
     def boiler_off_algorithm(self, temp: TemperatureReadings, status: PumpStatus):
         """
-        Handles pump operations when the boiler is OFF.
-        Ensures that Tank 1 accumulates the most energy by transferring heat from Tank 2 to Tank 1.
+        If boiler is OFF, we might want to do other logic (like transferring from T2->T1).
+        For this minimal example, we just turn off PT1T2 and reset flags.
         """
-        self.logger.debug("Running Boiler OFF Algorithm")
-        # Turn off PT1T2 pump
+        self.logger.debug("Boiler OFF => no emergency or normal ops from T1->T2.")
         self.set_transfer_pump("PT1T2", False)
+        self.rule_one_active = False
+        self.rule_two_active = False
 
-        # Check and transfer from Tank 2 to Tank 1
-        if self.should_transfer_tank2_to_tank1(temp, status):
-            if not status.PT2T1 and self.pump_offtime_PT2T1 >= PUMP_MIN_OFF_TIME:
-                self.set_transfer_pump("PT2T1", True)
-                self.logger.info("Starting PT2T1 pump to transfer heat from Tank 2 to Tank 1.")
-            elif status.PT2T1:
-                self.logger.debug("PT2T1 pump already running.")
-            elif self.pump_offtime_PT2T1 < PUMP_MIN_OFF_TIME:
-                self.logger.debug(f"Waiting for minimum off time: {self.pump_offtime_PT2T1}/{PUMP_MIN_OFF_TIME}")
+        # Example: you might do T2 -> T1 logic (PT2T1) here if you want
+        # For brevity, we won't detail it in this example.
+
+        # Update counters for PT1T2
+        if self.pump_state_PT1T2:
+            self.pump_runtime_PT1T2 += 1
+            self.pump_offtime_PT1T2 = 0
         else:
-            if status.PT2T1 and self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
-                self.set_transfer_pump("PT2T1", False)
-                self.logger.info("Stopping PT2T1 pump as conditions are no longer met.")
-            elif status.PT2T1 and self.pump_runtime_PT2T1 < PUMP_MIN_ON_TIME:
-                self.logger.debug(f"Waiting for minimum run time: {self.pump_runtime_PT2T1}/{PUMP_MIN_ON_TIME}")
-            else:
-                self.logger.debug("PT2T1 pump is already off or conditions not met.")
+            self.pump_offtime_PT1T2 += 1
+            self.pump_runtime_PT1T2 = 0
 
-        # Update pump runtime and offtime for PT2T1
-        if self.pump_state_PT2T1:
-            self.pump_runtime_PT2T1 += 1
-            self.pump_offtime_PT2T1 = 0  # Reset offtime when pump is running
-            self.logger.debug(f"Pump PT2T1 runtime: {self.pump_runtime_PT2T1}")
-        else:
-            self.pump_offtime_PT2T1 += 1
-            self.pump_runtime_PT2T1 = 0  # Reset runtime when pump is off
-            self.logger.debug(f"Pump PT2T1 off time: {self.pump_offtime_PT2T1}")
 
-        # Stop the pump if T1BOT is 2°C higher than T3TOP
-        if temp.T1BOT is not None and temp.T3TOP is not None:
-            if (temp.T1BOT - temp.T3TOP) >= 200:  # 200 represents 2.00°C
-                if status.PT2T1 and self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
-                    self.set_transfer_pump("PT2T1", False)
-                    self.logger.info("Stopping PT2T1 pump as T1BOT is 2°C higher than T3TOP.")
-                elif status.PT2T1 and self.pump_runtime_PT2T1 < PUMP_MIN_ON_TIME:
-                    self.logger.debug(f"Waiting for minimum run time: {self.pump_runtime_PT2T1}/{PUMP_MIN_ON_TIME}")
-
-    def should_transfer_tank2_to_tank1(self, temp: TemperatureReadings, status: PumpStatus) -> bool:
-        """
-        Determines whether to transfer heat from Tank 2 to Tank 1 based on energy in Wh.
-        The transfer occurs if Tank 2 has more energy than Tank 1.
-        """
-        # Calculate average temperatures for each tank using available sensors
-        try:
-            tank1_avg_temp = (temp.T1TOP + temp.T1MID + temp.T1BOT) / 300 if None not in (temp.T1TOP, temp.T1MID, temp.T1BOT) else None
-            tank2_avg_temp = (temp.T2TOP + temp.T2MID + temp.T2BOT) / 300 if None not in (temp.T2TOP, temp.T2MID, temp.T2BOT) else None
-        except TypeError as e:
-            self.logger.error(f"Error calculating average temperatures: {e}")
-            return False
-
-        if tank1_avg_temp is None or tank2_avg_temp is None:
-            self.logger.warning("Insufficient temperature data to calculate average temperatures.")
-            return False
-
-        self.logger.debug(f"Tank 1 Average Temperature: {tank1_avg_temp:.2f}°C")
-        self.logger.debug(f"Tank 2 Average Temperature: {tank2_avg_temp:.2f}°C")
-
-        # Calculate energy in Wh
-        energy_tank1 = self.tank_volumes['Tank1'] * tank1_avg_temp * SPECIFIC_HEAT_CAPACITY
-        energy_tank2 = self.tank_volumes['Tank2'] * tank2_avg_temp * SPECIFIC_HEAT_CAPACITY
-
-        self.logger.debug(f"Energy in Tank 1: {energy_tank1:.2f} Wh")
-        self.logger.debug(f"Energy in Tank 2: {energy_tank2:.2f} Wh")
-
-        if energy_tank2 > energy_tank1:
-            self.logger.debug("Tank 2 has more energy than Tank 1. Initiating transfer.")
-            return True
-        else:
-            self.logger.debug("Tank 1 has equal or more energy than Tank 2. No transfer needed.")
-            return False
-
-# Main class
 class MainClass:
+    """
+    Orchestrates reading from DB, talking to PLC, running Algorithm, and hosting Flask+Socket.IO.
+    """
     def __init__(self, logger, pushbullet, parser):
-        try:
-            self.logger = logger
-            self.pushbullet = pushbullet
-            self.parser = parser
+        self.logger = logger
+        self.pushbullet = pushbullet
+        self.parser = parser
 
-            # Create Pushbullet
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("INFO: LogiView LOGO8", "logiview_logo8.py started")
-
-            # Create a TemperatureReadings and PumpStatus object
-            self.temp = TemperatureReadings()
-            self.status = PumpStatus()
-
-            # Initialize Flask app and SocketIO
-            self.app = app
-            self.socketio = socketio
-
-            # Start the Flask app in a separate thread
-            self.flask_thread = threading.Thread(target=self.start_flask_app)
-            self.flask_thread.daemon = True  # Daemonize thread to exit when main program exits
-            self.flask_thread.start()
-
-        except Exception as e:
-            self.logger.error(f"Error during initialization: {e}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error during initialization: {e}")
-            exit_program(self.logger, self.pushbullet, exit_code=1, message="Error during initialization")
-
-        # Set up a MySQL connection pool
+        # Initialize DB pool
         try:
             self.cnx_pool = mysql.connector.pooling.MySQLConnectionPool(
                 pool_name="mypool",
@@ -620,209 +541,186 @@ class MainClass:
                 database="logiview",
                 connect_timeout=10
             )
-            self.logger.info("Successfully connected to the MySQL server!")
+            self.logger.info("MySQL connection pool initialized!")
         except mysql.connector.Error as err:
             self.logger.error(f"MySQL connection error: {err}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"MySQL connection error: {err}")
-            exit_program(self.logger, self.pushbullet, exit_code=1, message="MySQL connection error")
+            exit_program(self.logger, self.pushbullet, 1, f"MySQL connection error: {err}")
 
-        # Initialize last data timestamp
+        # Prepare temperature + status objects
+        self.temp = TemperatureReadings()
+        self.status = PumpStatus()
         self.last_data_timestamp = datetime.now()
 
+        # Start Flask in a separate thread
+        self.app = app
+        self.socketio = socketio
+        self.flask_thread = threading.Thread(target=self.start_flask_app, daemon=True)
+        self.flask_thread.start()
+
     def start_flask_app(self):
+        """
+        Run the Flask+SocketIO server on port 5000.
+        """
         try:
-            self.logger.info("Starting Flask server on 0.0.0.0:5000")
-            # Run the Flask app with SocketIO
-            self.socketio.run(
-                self.app,
-                host='0.0.0.0',
-                port=5000,
-                debug=False,
-                use_reloader=False  # Disable reloader if running in a separate thread
-            )
+            self.logger.info("Starting Flask on 0.0.0.0:5000")
+            self.socketio.run(self.app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
         except Exception as e:
-            self.logger.error("Failed to start Flask server.")
-            self.logger.error(f"Exception: {e}")
-            self.logger.error("Traceback:")
-            self.logger.error(traceback.format_exc())
-            # Optionally, notify via Pushbullet
-            if self.pushbullet is not None:
-                self.pushbullet.push_note(
-                    "ERROR: Flask Server",
-                    f"Failed to start Flask server.\nException: {e}\nTraceback:\n{traceback.format_exc()}"
-                )
-            # Depending on your use case, you might want to exit or attempt a restart
-            exit_program(self.logger, self.pushbullet, exit_code=1, message="Flask server failed to start.")
+            self.logger.error(f"Flask server start error: {e}")
+            exit_program(self.logger, self.pushbullet, 1, "Flask server failed")
 
     def update_status_in_db(self, column_name, value):
-        sql_str = f"UPDATE logiview.tempdata SET {column_name} = {int(value)} ORDER BY datetime DESC LIMIT 1"
+        """
+        Example: update the latest record's status in the DB (e.g. BP=1 or PT2T1=0).
+        """
+        sql = f"UPDATE logiview.tempdata SET {column_name} = {1 if value else 0} ORDER BY datetime DESC LIMIT 1"
         try:
-            cnx = self.cnx_pool.get_connection()
-            cursor = cnx.cursor()
-            cursor.execute(sql_str)
-            cnx.commit()
-            self.logger.debug(f"Updated {column_name} with value {value} in the database")
+            with self.cnx_pool.get_connection() as cnx:
+                with cnx.cursor() as cursor:
+                    cursor.execute(sql)
+                    cnx.commit()
+                    self.logger.debug(f"Updated {column_name} to {value} in DB")
         except mysql.connector.Error as err:
-            self.logger.error(f"Database error while updating status: {err}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Database error while updating status: {err}")
-        finally:
-            cursor.close()
-            cnx.close()
+            self.logger.error(f"DB error updating {column_name}: {err}")
 
     def check_data_timestamp(self):
         """
-        Checks if data has been added to the database in the last 5 minutes.
+        Checks if the DB has a new entry within last 5 minutes.
         """
-        sql_str = "SELECT MAX(datetime) FROM logiview.tempdata"
+        sql = "SELECT MAX(datetime) FROM logiview.tempdata"
         try:
-            cnx = self.cnx_pool.get_connection()
-            cursor = cnx.cursor()
-            cursor.execute(sql_str)
-            result = cursor.fetchone()
-            if result and result[0]:
-                last_entry_time = result[0]
-                current_time = datetime.now()
-                time_diff = current_time - last_entry_time
-                self.logger.debug(f"Last data timestamp: {last_entry_time}, Current time: {current_time}, Time diff: {time_diff}")
-                if time_diff > timedelta(minutes=5):
-                    self.logger.warning("No data has been added to the database for over 5 minutes.")
-                    if self.pushbullet is not None:
-                        self.pushbullet.push_note("WARNING: LogiView LOGO8", "No data has been added to the database for over 5 minutes.")
-            else:
-                self.logger.warning("Unable to retrieve last data timestamp from the database.")
+            with self.cnx_pool.get_connection() as cnx:
+                with cnx.cursor() as cursor:
+                    cursor.execute(sql)
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        last_entry = result[0]
+                        if (datetime.now() - last_entry) > timedelta(minutes=5):
+                            self.logger.warning("No new DB data in over 5 mins.")
+                            if self.pushbullet and USE_PUSHBULLET:
+                                self.pushbullet.push_note("WARNING", "No data in DB for 5+ mins.")
+                    else:
+                        self.logger.warning("Could not retrieve last DB timestamp.")
         except mysql.connector.Error as err:
-            self.logger.error(f"Database error while checking data timestamp: {err}")
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Database error while checking data timestamp: {err}")
-        finally:
-            cursor.close()
-            cnx.close()
+            self.logger.error(f"DB error checking timestamp: {err}")
 
     def main_loop(self):
-        # Create a Logo8 PLC handler
+        """
+        Core loop: read temperatures + statuses, run logic, update DB, repeat.
+        """
         try:
-            # Adjust the IP address as needed
-            plc_handler = LogoPlcHandler(self.logger, '192.168.0.200')
-            self.logger.info("Successfully created a Logo8 PLC handler!")
+            plc_handler = LogoPlcHandler(self.logger, "192.168.0.200")
+            self.logger.info("PLC handler created successfully.")
 
-            self.algorithm = Algorithm(plc_handler, self.logger)
-            self.logger.info("Successfully created algorithm object!")
+            algorithm = Algorithm(plc_handler, self.logger)
+            self.logger.info("Algorithm created successfully.")
 
             while True:
-                # Read temperature values
-                data_available = True
-                for temp_name in TEMP_COLUMNS:
-                    value = get_temperature_value(self.cnx_pool, temp_name, self.logger)
-                    if value is not None:
-                        setattr(self.temp, temp_name, value)
-                    else:
-                        self.logger.error(f"Failed to retrieve temperature value for {temp_name}")
-                        data_available = False
+                # 1. Get all temperature values
+                complete_data = True
+                for col in TEMP_COLUMNS:
+                    val = get_temperature_value(self.cnx_pool, col, self.logger)
+                    if val is None:
+                        complete_data = False
+                    setattr(self.temp, col, val)
 
-                if data_available:
+                if complete_data:
                     self.last_data_timestamp = datetime.now()
                 else:
-                    self.logger.warning("Incomplete temperature data. Using last known values.")
+                    self.logger.warning("Some temperature data is None, using last known...")
 
-                # Check if data has been added to the database for the last 5 minutes
-                if datetime.now() - self.last_data_timestamp > timedelta(minutes=5):
+                # 2. Check data staleness every 5 minutes
+                if (datetime.now() - self.last_data_timestamp) > timedelta(minutes=5):
                     self.check_data_timestamp()
-                    self.last_data_timestamp = datetime.now()  # Update to prevent multiple notifications
+                    self.last_data_timestamp = datetime.now()
 
-                # Reading from virtual inputs from logo8
+                # 3. Read pump statuses from PLC
                 try:
-                    self.status.BP = plc_handler.read_bit("V1.0", 0)        # Boiler pump
-                    self.status.PT2T1 = plc_handler.read_bit("V1.1", 0)     # Transfer pump T2->T1
-                    self.status.PT1T2 = plc_handler.read_bit("V1.2", 0)     # Transfer pump T1->T2
-                    # self.status.WDT = plc_handler.read_bit("V1.3", 0)      # Watchdog Timer (if used)
+                    self.status.BP = plc_handler.read_bit("V1.0", 0)
+                    self.status.PT2T1 = plc_handler.read_bit("V1.1", 0)
+                    self.status.PT1T2 = plc_handler.read_bit("V1.2", 0)
+                    # self.status.WDT = plc_handler.read_bit("V1.3", 0) # if used
                 except Exception as e:
-                    self.logger.error(f"Error reading pump statuses: {e}")
-                    if self.pushbullet is not None:
-                        self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error reading pump statuses: {e}")
+                    self.logger.error(f"PLC read error: {e}")
 
-                # Update status in database
+                # 4. Update DB statuses
                 try:
+                    self.update_status_in_db("BP", self.status.BP)
                     self.update_status_in_db("PT2T1", self.status.PT2T1)
                     self.update_status_in_db("PT1T2", self.status.PT1T2)
-                    self.update_status_in_db("BP", self.status.BP)
                 except Exception as e:
-                    self.logger.error(f"Error updating status in database: {e}")
-                    if self.pushbullet is not None:
-                        self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Error updating status in database: {e}")
+                    self.logger.error(f"Error updating DB statuses: {e}")
 
-                self.algorithm.execute_algorithm(self.temp, self.status)
+                # 5. Run the algorithm
+                algorithm.execute_algorithm(self.temp, self.status)
 
-                # Update Timestamp
-                self.timestamp = datetime.now().strftime("%y-%m-%d %H:%M")
-
-                time.sleep(1)  # Sleep for 1 second
+                time.sleep(1)
 
         except KeyboardInterrupt:
-            self.logger.info("Received a keyboard interrupt. Shutting down gracefully...")
-            plc_handler.disconnect()
-            exit_program(self.logger, self.pushbullet, exit_code=0, message="Received a keyboard interrupt. Shutting down gracefully")
+            self.logger.info("KeyboardInterrupt => shutting down.")
+            exit_program(self.logger, self.pushbullet, 0, "Exiting by user request.")
         except SystemExit as e:
-            sys.stderr = self.logger.original_stderr  # Reset stderr to its original value
-            exit_program(self.logger, self.pushbullet, exit_code=e.code, message="Received a system exit signal. Shutting down gracefully")
+            sys.stderr = self.logger.original_stderr
+            exit_program(self.logger, self.pushbullet, e.code, "SystemExit encountered.")
         except Exception as e:
-            self.logger.error(f"Unhandled exception in main loop: {e}")
-            self.logger.error("Traceback:")
+            self.logger.error("Unhandled exception in main_loop:")
             self.logger.error(traceback.format_exc())
-            if self.pushbullet is not None:
-                self.pushbullet.push_note("ERROR: LogiView LOGO8", f"Unhandled exception in main loop: {e}\nTraceback:\n{traceback.format_exc()}")
-            exit_program(self.logger, self.pushbullet, exit_code=1, message=f"Error in main loop: {e}")
+            exit_program(self.logger, self.pushbullet, 1, f"Fatal error: {e}")
 
-# Command-line argument parser
+
 class Parser:
+    """
+    Parses CLI arguments (or you can store your credentials as environment variables).
+    """
     def __init__(self, logger):
+        import argparse
         self.logger = logger
-        self.parser = argparse.ArgumentParser(description="Logiview LOGO8 script")
-        self.add_arguments()
-        
-    def add_arguments(self): 
-        self.parser.add_argument("--host", required=False, help="MySQL server IP address", default="192.168.0.240")
-        self.parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
+        self.parser = argparse.ArgumentParser(description="Logiview LOGO8 Script")
+        self.add_args()
+
+    def add_args(self):
+        self.parser.add_argument("--host", default="192.168.0.240", help="MySQL Server IP")
+        self.parser.add_argument("-u", "--user", default="pi", help="MySQL username")
         self.parser.add_argument("-p", "--password", required=True, help="MySQL password")
-        self.parser.add_argument("-a", "--apikey", required=True, help="API-Key for Pushbullet")
-        self.parser.add_argument("-s", "--snap7-lib", default=None, help="Path to Snap7 library")
-        
+        self.parser.add_argument("-a", "--apikey", required=False, help="Pushbullet API Key")
+        self.parser.add_argument("-s", "--snap7-lib", default=None, help="Snap7 library path")
+
     def parse(self):
         try:
-            parsed_args = self.parser.parse_args()
-            self.host = parsed_args.host
-            self.user = parsed_args.user
-            self.password = parsed_args.password
-            self.apikey = parsed_args.apikey
-            self.snap7_lib = parsed_args.snap7_lib
-            self.logger.debug("Parsed command-line arguments successfully!")
+            args = self.parser.parse_args()
+            self.host = args.host
+            self.user = args.user
+            self.password = args.password
+            self.apikey = args.apikey
+            self.snap7_lib = args.snap7_lib
+            self.logger.debug("Parsed command-line arguments.")
         except SystemExit:
-            error_message = sys.stderr.getvalue().strip()
-            exit_program(self.logger, None, exit_code=1, message=f"Error during parsing {error_message}")
+            err_msg = sys.stderr.getvalue().strip()
+            exit_program(self.logger, None, 1, f"Arg parsing error: {err_msg}")
 
-# Flask routes
+
 @app.route('/')
 def index():
+    """
+    Render the main dashboard.
+    """
     return render_template('index.html')
 
-# Main function
+
 def main():
-    # Create logger
     logger = LoggerClass(logging_level=LOGGING_LEVEL)
-    
-    # Parse command-line arguments
     parser = Parser(logger)
     parser.parse()
 
-    # Create Pushbullet instance
-    if USE_PUSHBULLET:
-        pushbullet = Pushbullet(logger, parser.apikey)
-    else:
-        pushbullet = None
+    # Optionally load snap7 library if needed
+    if parser.snap7_lib:
+        snap7.loader.load_library(parser.snap7_lib)
 
-    main_instance = MainClass(logger, pushbullet, parser)   # Create main class
-    main_instance.main_loop()     # Run main loop
+    # Create Pushbullet if desired
+    pushbullet = Pushbullet(logger, parser.apikey) if (parser.apikey and USE_PUSHBULLET) else None
+
+    main_obj = MainClass(logger, pushbullet, parser)
+    main_obj.main_loop()
+
 
 if __name__ == "__main__":
     main()
