@@ -32,10 +32,10 @@
   <div id="rules-container"></div>
 
   <script>
-    // Connect Socket.IO (defaults to the same host/port as the page)
+    // Connect Socket.IO (defaults to same host/port)
     const socket = io();
 
-    // Listen for 'update' events from Flask/Python
+    // Listen for 'update' from Python
     socket.on('update', function(data) {
       console.log("Received update:", data);
 
@@ -43,16 +43,17 @@
       document.getElementById("timestamp").textContent = data.timestamp || "";
 
       // Boiler status
-      document.getElementById("boiler_status").textContent = data.statuses && data.statuses.BP
-        ? "ON"
-        : "OFF";
+      if (data.statuses && typeof data.statuses.BP === "boolean") {
+        document.getElementById("boiler_status").textContent =
+          data.statuses.BP ? "ON" : "OFF";
+      }
 
       // Temperatures
       if (data.temperatures) {
         let html = "<ul>";
         for (let key in data.temperatures) {
-          if (data.temperatures[key] != null) {
-            // If stored in hundredths of °C, convert
+          if (data.temperatures[key] !== null) {
+            // Convert from hundredths to °C
             const celsius = (data.temperatures[key] / 100).toFixed(2);
             html += `<li>${key} = ${celsius} °C</li>`;
           } else {
@@ -65,7 +66,7 @@
 
       // Pump statuses
       if (data.statuses) {
-        const pumpKeys = ["BP","PT1T2","PT2T1","WDT"];
+        const pumpKeys = ["BP", "PT1T2", "PT2T1", "WDT"];
         let pumpHTML = "<ul>";
         pumpKeys.forEach(key => {
           if (key in data.statuses) {
@@ -76,14 +77,35 @@
         document.getElementById("pump-data").innerHTML = pumpHTML;
       }
 
-      // Display rules
+      // Rules
       if (data.rules) {
         let ruleHTML = "<ol>";
         data.rules.forEach(rule => {
-          const status = rule.is_active ? `<strong>ACTIVE</strong>` : "inactive";
-          ruleHTML += `<li><strong>${rule.name}</strong><br />
-                       Status: ${status}<br />
-                       <em>${rule.description}</em></li><br />`;
+          const statusText = rule.is_active ? "<strong>ACTIVE</strong>" : "inactive";
+
+          ruleHTML += `<li>
+            <strong>${rule.name}</strong><br />
+            Status: ${statusText}<br />
+            <em>${rule.description}</em>
+          `;
+
+          // Observed values
+          if (rule.actual_values) {
+            ruleHTML += "<br/><strong>Observed Values:</strong><ul>";
+            for (let valKey in rule.actual_values) {
+              let val = rule.actual_values[valKey];
+              if (typeof val === "number") {
+                // If it's obviously an energy, temp, etc., show with 2 decimals
+                ruleHTML += `<li>${valKey}: ${val.toFixed(2)}</li>`;
+              } else {
+                // Could be string, null, etc.
+                ruleHTML += `<li>${valKey}: ${val}</li>`;
+              }
+            }
+            ruleHTML += "</ul>";
+          }
+
+          ruleHTML += "</li><br />";
         });
         ruleHTML += "</ol>";
         document.getElementById("rules-container").innerHTML = ruleHTML;
