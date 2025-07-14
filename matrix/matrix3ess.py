@@ -7,6 +7,7 @@ import time
 import json
 import network
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
+import gc
 
 
 # Try to import socket - works on both MicroPython and CPython
@@ -926,6 +927,13 @@ class VictronMatrixDisplay:
         # Initialize display
         self._init_display()
         
+        # Add filter buffers for smoothing (window size 3-5 is typical)
+        self._grid_power_history = []
+        self._battery_power_history = []
+        self._pv_power_history = []
+        self._house_power_history = []
+        self._filter_window = 4  # You can adjust this for more/less smoothing
+    
         print(f"VictronMatrixDisplay initialized ({width}x{height})")
     
     def _init_display(self):
@@ -1129,7 +1137,7 @@ class VictronMatrixDisplay:
             self.graphics.rectangle(grid_x, bar_y_start + (bar_height - grid_bar_height), bar_width, grid_bar_height)
 
         if battery_percent > 0:
-            self.graphics.set_pen(self.pens["GREEN"])
+            self.graphics.set_pen(self.pens["BLUE"])
             battery_bar_height = int((battery_percent / 100.0) * bar_height) - 1
             self.graphics.rectangle(battery_x, bar_y_start + (bar_height - battery_bar_height), bar_width, battery_bar_height)
 
@@ -1223,11 +1231,16 @@ class VictronMatrixDisplay:
             except Exception:
                 return value
 
-        grid = "{:>{w}}".format(safe_str(round_power(data.get('grid_power'))), w=width)
-        battery = "{:>{w}}".format(safe_str(round_power(data.get('battery_power'))), w=width)
-        solar = "{:>{w}}".format(safe_str(round_power(data.get('pv_power'))), w=width)
-        house = "{:>{w}}".format(safe_str(round_power(data.get('house_power'))), w=width)
-        
+        # --- Apply smoothing ---
+        grid_power = self._smooth(self._grid_power_history, round_power(data.get('grid_power', 0)))
+        battery_power = self._smooth(self._battery_power_history, round_power(data.get('battery_power', 0)))
+        pv_power = self._smooth(self._pv_power_history, round_power(data.get('pv_power', 0)))
+        house_power = self._smooth(self._house_power_history, round_power(data.get('house_power', 0)))
+
+        grid = "{:>{w}}".format(safe_str(grid_power), w=width)
+        battery = "{:>{w}}".format(safe_str(battery_power), w=width)
+        solar = "{:>{w}}".format(safe_str(pv_power), w=width)
+        house = "{:>{w}}".format(safe_str(house_power), w=width)
         
         # Calculate the pixel width of the text (for the current font and scale)
         grid_width = self.graphics.measure_text(grid, scale=1)
@@ -1239,8 +1252,15 @@ class VictronMatrixDisplay:
         self.draw_text(grid, self.width - grid_width - 37, y_start, 'red', font="bitmap8")
         self.draw_text(battery, self.width - battery_width - 37, y_start + 10, 'blue', font="bitmap8")
         self.draw_text(solar, self.width - solar_width - 37, y_start + 20, 'orange', font="bitmap8")
-        self.draw_text(house, self.width - solar_width - 4, y_start, 'white', font="bitmap8")
+        self.draw_text(house, self.width - house_width - 4, y_start, 'white', font="bitmap8")
         self.show()
+
+    def _smooth(self, history, new_value):
+        """Append new_value to history, keep window size, and return average."""
+        history.append(new_value)
+        if len(history) > self._filter_window:
+            history.pop(0)
+        return sum(history) / len(history)
 
 def main():
     """
@@ -1292,7 +1312,12 @@ def main():
 
             if not data or reconnect_needed:
                 logger.warning("No data or N/A in critical field(s), reconnecting...")
-                # No need to disconnect here, will do below
+                fetcher.disconnect()
+                gc.collect()
+                time.sleep(0.2)
+                fetcher.connect()
+                gc.collect()
+                time.sleep(0.2)
             else:
                 # Only update display if data is valid, not reconnecting, and fresh
                 update_count += 1
