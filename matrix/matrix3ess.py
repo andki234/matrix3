@@ -1214,23 +1214,32 @@ class VictronMatrixDisplay:
                 return str(int(val))
             except (ValueError, TypeError):
                 return str(val)
+        def round_power(value):
+            try:
+                v = int(value)
+                if abs(v) > 1000:
+                    return int(round(v / 50.0) * 50)
+                return v
+            except Exception:
+                return value
 
-        grid = "{:>{w}}".format(safe_str(data.get('grid_power')), w=width)
-        battery = "{:>{w}}".format(safe_str(data.get('battery_power')), w=width)
-        solar = "{:>{w}}".format(safe_str(data.get('pv_power')), w=width)
+        grid = "{:>{w}}".format(safe_str(round_power(data.get('grid_power'))), w=width)
+        battery = "{:>{w}}".format(safe_str(round_power(data.get('battery_power'))), w=width)
+        solar = "{:>{w}}".format(safe_str(round_power(data.get('pv_power'))), w=width)
+        house = "{:>{w}}".format(safe_str(round_power(data.get('house_power'))), w=width)
+        
         
         # Calculate the pixel width of the text (for the current font and scale)
         grid_width = self.graphics.measure_text(grid, scale=1)
         battery_width = self.graphics.measure_text(battery, scale=1)
         solar_width = self.graphics.measure_text(solar, scale=1)
+        house_width = self.graphics.measure_text(house, scale=1)
         
         # Right-justify text based on the with of every text
-        
-        
-        self.graphics.set_font("bitmap8")
         self.draw_text(grid, self.width - grid_width - 37, y_start, 'red', font="bitmap8")
         self.draw_text(battery, self.width - battery_width - 37, y_start + 10, 'blue', font="bitmap8")
         self.draw_text(solar, self.width - solar_width - 37, y_start + 20, 'orange', font="bitmap8")
+        self.draw_text(solar, self.width - solar_width - 4, y_start, 'white', font="bitmap8")
         self.show()
 
 def main():
