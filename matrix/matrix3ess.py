@@ -1239,7 +1239,7 @@ class VictronMatrixDisplay:
         self.draw_text(grid, self.width - grid_width - 37, y_start, 'red', font="bitmap8")
         self.draw_text(battery, self.width - battery_width - 37, y_start + 10, 'blue', font="bitmap8")
         self.draw_text(solar, self.width - solar_width - 37, y_start + 20, 'orange', font="bitmap8")
-        self.draw_text(solar, self.width - solar_width - 4, y_start, 'white', font="bitmap8")
+        self.draw_text(house, self.width - solar_width - 4, y_start, 'white', font="bitmap8")
         self.show()
 
 def main():
@@ -1292,38 +1292,22 @@ def main():
 
             if not data or reconnect_needed:
                 logger.warning("No data or N/A in critical field(s), reconnecting...")
-                fetcher.disconnect()
-                time.sleep(1)
-                fetcher.connect()
-                time.sleep(0.1)
-                continue
+                # No need to disconnect here, will do below
+            else:
+                # Only update display if data is valid, not reconnecting, and fresh
+                update_count += 1
+                current_time = time.time()
+                if current_time - last_display_update >= 2.1:
+                    logger.debug("Showing combined power bars and SoC bar")
+                    display.draw_power_bars_with_soc(data)
+                    display.draw_power_summary(data)
+                    last_display_update = current_time
 
-            # Only update display if data is valid, not reconnecting, and fresh
-            update_count += 1
-            current_time = time.time()
-            if current_time - last_display_update >= 1.1:
-                logger.debug("Showing combined power bars and SoC bar")
-                display.draw_power_bars_with_soc(data)
-                display.draw_power_summary(data)
-                last_display_update = current_time
-
+            # Always disconnect and reconnect after each fetch
+            fetcher.disconnect()
             time.sleep(0.1)
-        logger.info(f"\nTest complete - received {update_count} updates in 30 seconds")
-        latest = fetcher.get_latest_data()
-        if latest:
-            logger.info("\n=== Latest Cached Data ===")
-            if 'soc' in latest:
-                logger.info(f"Battery (age: {latest['battery_age_seconds']:.1f}s): SoC={latest['soc']}%, Power={latest['battery_power']}W")
-            if 'grid_power' in latest:
-                logger.info(f"AC Power (age: {latest['ac_age_seconds']:.1f}s): Grid={latest['grid_power']}W, House={latest['house_power']}W")
-            if 'pv_power' in latest:
-                logger.info(f"PV Power (age: {latest['pv_age_seconds']:.1f}s): Solar={latest['pv_power']}W")
-            display.draw_power_bars_with_soc(latest)
-        else:
-            display.graphics.set_pen(display._get_pen("red"))
-            display.graphics.clear()
-            display.graphics.text("NO DATA", 10, 12, scale=1)
-            display.show()
+            fetcher.connect()
+            time.sleep(0.1)
     except KeyboardInterrupt:
         logger.warning("\nTest interrupted by user")
         display.graphics.set_pen(display._get_pen("yellow"))
