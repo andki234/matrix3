@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>LogiView LOGO8 Dashboard</title>
+  <!-- Socket.IO client -->
+  <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+</head>
+<body>
+  <h1>LogiView LOGO8 Dashboard</h1>
+
+  <!-- Basic info -->
+  <div>
+    <strong>Timestamp:</strong>
+    <span id="timestamp"></span>
+  </div>
+  <div>
+    <strong>Boiler Status (BP):</strong>
+    <span id="boiler_status"></span>
+  </div>
+
+  <!-- Temperatures -->
+  <h2>Temperatures</h2>
+  <div id="temp-data"></div>
+
+  <!-- Pump Statuses -->
+  <h2>Pump Status</h2>
+  <div id="pump-data"></div>
+
+  <!-- Rules Overview -->
+  <h2>Rules</h2>
+  <div id="rules-container"></div>
+
+  <script>
+    // Connect Socket.IO (defaults to same host/port)
+    const socket = io();
+
+    // Listen for 'update' from Python
+    socket.on('update', function(data) {
+      console.log("Received update:", data);
+
+      // Timestamp
+      document.getElementById("timestamp").textContent = data.timestamp || "";
+
+      // Boiler status
+      if (data.statuses && typeof data.statuses.BP === "boolean") {
+        document.getElementById("boiler_status").textContent =
+          data.statuses.BP ? "ON" : "OFF";
+      }
+
+      // Temperatures
+      if (data.temperatures) {
+        let html = "<ul>";
+        for (let key in data.temperatures) {
+          if (data.temperatures[key] !== null) {
+            // Convert from hundredths to °C
+            const celsius = (data.temperatures[key] / 100).toFixed(2);
+            html += `<li>${key} = ${celsius} °C</li>`;
+          } else {
+            html += `<li>${key} = N/A</li>`;
+          }
+        }
+        html += "</ul>";
+        document.getElementById("temp-data").innerHTML = html;
+      }
+
+      // Pump statuses
+      if (data.statuses) {
+        const pumpKeys = ["BP", "PT1T2", "PT2T1", "WDT"];
+        let pumpHTML = "<ul>";
+        pumpKeys.forEach(key => {
+          if (key in data.statuses) {
+            pumpHTML += `<li>${key}: ${data.statuses[key] ? "ON" : "OFF"}</li>`;
+          }
+        });
+        pumpHTML += "</ul>";
+        document.getElementById("pump-data").innerHTML = pumpHTML;
+      }
+
+      // Rules
+      if (data.rules) {
+        let ruleHTML = "<ol>";
+        data.rules.forEach(rule => {
+          const statusText = rule.is_active ? "<strong>ACTIVE</strong>" : "inactive";
+
+          ruleHTML += `<li>
+            <strong>${rule.name}</strong><br />
+            Status: ${statusText}<br />
+            <em>${rule.description}</em>
+          `;
+
+          // Observed values
+          if (rule.actual_values) {
+            ruleHTML += "<br/><strong>Observed Values:</strong><ul>";
+            for (let valKey in rule.actual_values) {
+              let val = rule.actual_values[valKey];
+              if (typeof val === "number") {
+                // If it's obviously an energy, temp, etc., show with 2 decimals
+                ruleHTML += `<li>${valKey}: ${val.toFixed(2)}</li>`;
+              } else {
+                // Could be string, null, etc.
+                ruleHTML += `<li>${valKey}: ${val}</li>`;
+              }
+            }
+            ruleHTML += "</ul>";
+          }
+
+          ruleHTML += "</li><br />";
+        });
+        ruleHTML += "</ol>";
+        document.getElementById("rules-container").innerHTML = ruleHTML;
+      }
+    });
+  </script>
+</body>
+</html>

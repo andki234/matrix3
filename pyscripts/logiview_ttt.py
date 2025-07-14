@@ -52,7 +52,11 @@ import setproctitle
 # Global Configuration
 # ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 LOGGING_LEVEL = logging.WARNING # Adjust to logging.DEBUG for verbose logging
+=======
+LOGGING_LEVEL = logging.WARNING  # Adjust to logging.DEBUG for verbose logging
+>>>>>>> ff30984972a02e12a91b05bd20bed441a999abf3
 USE_PUSHBULLET = True           # Set to False to disable pushbullet notifications
 
 # ---------------------------------------------------------------------------
