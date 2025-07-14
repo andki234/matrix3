@@ -571,6 +571,9 @@ class VictronDataFetcher:
             print(f"Unexpected error reading PV power data: {e}")
             self.pv_connected = False
             return None
+        
+        
+        
     def read_all_data(self):
         """
         Read data from all available sources and combine into a complete dataset.
@@ -749,6 +752,30 @@ class VictronDataFetcher:
         results['overall'] = results['battery'] or results['ac_power'] or results['pv_power']
         return results
     
+    def robust_battery_fetch(self, retries=3, delay=0.2):
+        for _ in range(retries):
+            success, soc, power, capacity_ah = self.battery_fetcher.fetch_data()
+            if success:
+                return True, soc, power, capacity_ah
+            time.sleep(delay)
+        return False, 0, 0, 0
+
+    def robust_ac_fetch(self, retries=3, delay=0.2):
+        for _ in range(retries):
+            success, ac_in_power, ac_house_power = self.ac_power_fetcher.fetch_power_data()
+            if success:
+                return True, ac_in_power, ac_house_power
+            time.sleep(delay)
+        return False, 0, 0
+
+    def robust_pv_fetch(self, retries=3, delay=0.2):
+        for _ in range(retries):
+            success, pv_power = self.pv_power_fetcher.fetch_pv_data()
+            if success:
+                return True, pv_power
+            time.sleep(delay)
+        return False, 0
+
 class WiFiConnection:
     """
     Manages Wi-Fi connectivity with automatic retry logic.
@@ -1018,9 +1045,10 @@ class VictronMatrixDisplay:
                     self.graphics.line(x + width - 1, y, x + width - 1, y + height - 1)  # right
                     self.graphics.line(x, y + height - 1, x + width - 1, y + height - 1)  # bottom
     
-    def draw_text(self, text, x, y, color, scale=1):
-        """Draw text on the display."""
+    def draw_text(self, text, x, y, color, scale=1, font="bitmap8"):
+        """Draw text on the display using the specified font (default 'bitmap8')."""
         if self.graphics:
+            self.graphics.set_font(font)
             pen = self._get_pen(color)
             if pen:
                 self.graphics.set_pen(pen)
@@ -1029,9 +1057,9 @@ class VictronMatrixDisplay:
     def show_startup_message(self):
         """Display startup/initialization message."""
         self.clear()
-        self.draw_text("Victron", 15, 8, 'green', scale=1)
-        self.draw_text("Matrix", 18, 16, 'blue', scale=1)
-        self.draw_text("Starting...", 8, 24, 'white', scale=1)
+        self.draw_text("Victron", 15, 8, 'green', scale=1, font="bitmap8")
+        self.draw_text("Matrix", 18, 16, 'blue', scale=1, font="bitmap8")
+        self.draw_text("Starting...", 8, 24, 'white', scale=1, font="bitmap8")
         self.show()
         self.matrix.update()
 
@@ -1168,6 +1196,43 @@ class VictronMatrixDisplay:
         self.draw_soc_bar(test_data)
         self.show()
 
+    def draw_power_summary(self, data, y_start=2, color='white', width=8):
+        """
+        Draw grid, battery, and solar power values right-justified on the matrix display.
+
+        Args:
+            data (dict): Should contain 'grid_power', 'battery_power', 'pv_power'
+            y_start (int): Y position to start drawing text
+            color (str): Text color
+            width (int): Width for right-justification (character count)
+        """
+        # Safely convert values to string before formatting
+        def safe_str(val):
+            if val is None:
+                return "N/A"
+            try:
+                return str(int(val))
+            except (ValueError, TypeError):
+                return str(val)
+
+        grid = "{:>{w}}".format(safe_str(data.get('grid_power')), w=width)
+        battery = "{:>{w}}".format(safe_str(data.get('battery_power')), w=width)
+        solar = "{:>{w}}".format(safe_str(data.get('pv_power')), w=width)
+        
+        # Calculate the pixel width of the text (for the current font and scale)
+        grid_width = self.graphics.measure_text(grid, scale=1)
+        battery_width = self.graphics.measure_text(battery, scale=1)
+        solar_width = self.graphics.measure_text(solar, scale=1)
+        
+        # Right-justify text based on the with of every text
+        
+        
+        self.graphics.set_font("bitmap8")
+        self.draw_text(grid, self.width - grid_width - 37, y_start, 'red', font="bitmap8")
+        self.draw_text(battery, self.width - battery_width - 37, y_start + 10, 'blue', font="bitmap8")
+        self.draw_text(solar, self.width - solar_width - 37, y_start + 20, 'orange', font="bitmap8")
+        self.show()
+
 def main():
     """
     Enhanced test/demo of the VictronDataFetcher and VictronMatrixDisplay classes.
@@ -1195,78 +1260,44 @@ def main():
         return
     logger.info("\nConnection test passed - starting data monitoring and display...")
     try:
-        start_time = time.time()
+        # Remove start_time and update_count if not needed elsewhere
         update_count = 0
         last_display_update = 0
-        while time.time() - start_time < 30:
+        while True:
             data = fetcher.read_all_data()
+            reconnect_needed = False
+
+            # Check for missing/invalid data (N/A or None for critical fields)
             if data:
-                update_count += 1
-                current_time = time.time()
-                if current_time - last_display_update >= 0.5:
-                    logger.debug("Showing combined power bars and SoC bar")
-                    display.draw_power_bars_with_soc(data)
-                    last_display_update = current_time
-                if update_count % 10 == 1:
-                    logger.info(f"\n=== Update #{update_count} ===")
-                    if 'soc' in data:
-                        logger.info("Battery Data:")
-                        logger.info(f"  SoC: {data['soc']}%")
-                        logger.info(f"  Battery Power: {data['battery_power']}W")
-                        logger.info(f"  Voltage: {data['voltage']:.1f}V")
-                        logger.info(f"  Current: {data['current']:.1f}A")
-                        logger.info(f"  Capacity: {data['capacity_ah']}Ah")
-                    else:
-                        logger.info("Battery Data: Not available")
-                    if 'grid_power' in data:
-                        logger.info("AC Power Data:")
-                        logger.info(f"  Grid Power: {data['grid_power']}W")
-                        logger.info(f"  House Load: {data['house_power']}W")
-                        logger.info(f"  Grid Import: {data['grid_import']}W")
-                        logger.info(f"  Grid Export: {data['grid_export']}W")
-                        if 'grid_phases' in data:
-                            grid_phases = data['grid_phases']
-                            logger.info(f"  Grid Phases - P1: {grid_phases['P1']}W, P2: {grid_phases['P2']}W, P3: {grid_phases['P3']}W")
-                        if 'house_phases' in data:
-                            house_phases = data['house_phases']
-                            logger.info(f"  House Phases - P1: {house_phases['P1']}W, P2: {house_phases['P2']}W, P3: {house_phases['P3']}W")
-                    else:
-                        logger.info("AC Power Data: Not available")
-                    if 'pv_power' in data:
-                        logger.info("PV Power Data:")
-                        logger.info(f"  Solar Power: {data['pv_power']}W")
-                    else:
-                        logger.info("PV Power Data: Not available")
-                    if 'battery_power' in data and 'grid_power' in data and 'house_power' in data:
-                        logger.info("Power Balance:")
-                        battery_power = data['battery_power']
-                        grid_power = data['grid_power']
-                        house_power = data['house_power']
-                        pv_power = data.get('pv_power', 0)
-                        if battery_power > 0:
-                            logger.info(f"  Battery: CHARGING at {battery_power}W")
-                        elif battery_power < 0:
-                            logger.info(f"  Battery: DISCHARGING at {abs(battery_power)}W")
-                        else:
-                            logger.info(f"  Battery: IDLE")
-                        if grid_power > 0:
-                            logger.info(f"  Grid: IMPORTING {grid_power}W")
-                        elif grid_power < 0:
-                            logger.info(f"  Grid: EXPORTING {abs(grid_power)}W")
-                        else:
-                            logger.info(f"  Grid: BALANCED")
-                        logger.info(f"  House consuming: {house_power}W")
-                        logger.info(f"  Solar generating: {pv_power}W")
-                        total_generation = pv_power + max(0, -battery_power) + max(0, grid_power)
-                        total_consumption = house_power + max(0, battery_power) + max(0, -grid_power)
-                        logger.info(f"  Generation: {total_generation}W, Consumption: {total_consumption}W")
-            else:
-                if time.time() - last_display_update >= 1.0:
-                    display.graphics.set_pen(display._get_pen("red"))
-                    display.graphics.clear()
-                    display.graphics.text("NO DATA", 10, 12, scale=1)
-                    display.show()
-                    last_display_update = time.time()
+                critical_keys = ['soc', 'battery_power', 'grid_power', 'house_power', 'pv_power']
+                for key in critical_keys:
+                    val = data.get(key, "N/A")
+                    if val is None or val == "N/A":
+                        reconnect_needed = True
+                        logger.warning(f"Missing or invalid data for '{key}', will reconnect.")
+                        break
+                # Add freshness check
+                if not is_data_fresh(data):
+                    reconnect_needed = True
+                    logger.warning("Data is too old, will reconnect.")
+
+            if not data or reconnect_needed:
+                logger.warning("No data or N/A in critical field(s), reconnecting...")
+                fetcher.disconnect()
+                time.sleep(1)
+                fetcher.connect()
+                time.sleep(0.1)
+                continue
+
+            # Only update display if data is valid, not reconnecting, and fresh
+            update_count += 1
+            current_time = time.time()
+            if current_time - last_display_update >= 1.1:
+                logger.debug("Showing combined power bars and SoC bar")
+                display.draw_power_bars_with_soc(data)
+                display.draw_power_summary(data)
+                last_display_update = current_time
+
             time.sleep(0.1)
         logger.info(f"\nTest complete - received {update_count} updates in 30 seconds")
         latest = fetcher.get_latest_data()
@@ -1293,6 +1324,17 @@ def main():
     finally:
         fetcher.disconnect()
         logger.info("Test finished")
+
+def is_data_fresh(data, max_age=10):
+    # Check if all critical fields are present and not older than max_age seconds
+    now = time.time()
+    if 'battery_age' in data and data['battery_age'] > max_age:
+        return False
+    if 'ac_age' in data and data['ac_age'] > max_age:
+        return False
+    if 'pv_age' in data and data['pv_age'] > max_age:
+        return False
+    return True
 
 if __name__ == "__main__":
     main()
