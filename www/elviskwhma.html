@@ -1,15 +1,12 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Moving Average Chart</title>
     <!-- Include jQuery library -->
     <script src="http://code.jquery.com/jquery-3.5.1.min.js"></script>
     <!-- Include Chart.js library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
 </head>
-
 <body>
     <h1>Moving Average Chart</h1>
     <label for="start_date">Start Date: </label>
@@ -32,7 +29,7 @@
                 }
 
                 // Get the JSON data from your PHP script with the selected start date
-                $.get(' ?start_date=' + startDate, function(data) {
+                $.get('elvismvadb.php?start_date=' + startDate, function(data) {
                     // Parse the JSON data
                     var jsonData = JSON.parse(data);
 

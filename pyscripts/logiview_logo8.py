@@ -14,9 +14,11 @@ eventlet.monkey_patch()
 
 # 2) STANDARD LIBRARIES
 import argparse
+import atexit
 import io
 import logging
 import logging.handlers
+import os
 import sys
 import time
 import traceback
@@ -30,7 +32,14 @@ from mysql.connector import pooling
 import requests
 import snap7
 from snap7.logo import Logo
-import setproctitle
+
+# setproctitle may be missing on some targets; guard it so startup still logs cleanly.
+try:
+    import setproctitle  # type: ignore
+    _setproctitle_available = True
+except ImportError:
+    setproctitle = None  # type: ignore
+    _setproctitle_available = False
 
 # 4) FLASK + SOCKET.IO
 from flask import Flask, render_template
@@ -38,7 +47,11 @@ from flask_socketio import SocketIO
 import threading
 
 # (Optional) Set process title for easier identification
-setproctitle.setproctitle("logiview_logo8")
+if _setproctitle_available:
+    try:
+        setproctitle.setproctitle("logiview_logo8")
+    except Exception:
+        pass
 
 # --- CONFIGURATION CONSTANTS ---
 LOGGING_LEVEL = logging.DEBUG
@@ -75,12 +88,21 @@ SPECIFIC_HEAT_CAPACITY = 1.16
 ENERGY_DIFF_START = 500.0  # Wh difference needed to start transfer
 ENERGY_DIFF_STOP = 300.0   # Wh difference to keep transfer running
 
-# --- FLASK & SOCKET.IO SETUP ---
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'some_secret_key'
-socketio = SocketIO(app, async_mode='eventlet', logger=True, engineio_logger=True)
 
-# --- HELPER FUNCTIONS AND CLASSES ---
+# --- FLASK & SOCKET.IO SETUP ---
+def create_app():
+    app = Flask(__name__)
+    app.config['SECRET_KEY'] = 'some_secret_key'
+    return app
+
+def create_socketio(app):
+    # Disable SocketIO internal logging to avoid noisy engineio debug like "emitting event" lines.
+    return SocketIO(app, async_mode='eventlet', logger=False, engineio_logger=False)
+
+app = create_app()
+socketio = create_socketio(app)
+
+# --- CORE LOGIC CLASSES & FUNCTIONS ---
 
 def exit_program(logger: logging.Logger, pushbullet: Optional["Pushbullet"] = None,
                  exit_code: int = 1, message: str = "Exiting") -> None:
@@ -93,6 +115,13 @@ def exit_program(logger: logging.Logger, pushbullet: Optional["Pushbullet"] = No
         logger.error(message)
     if pushbullet and USE_PUSHBULLET:
         pushbullet.push_note("LogiView LOGO8 Exit", message)
+    # Always restore stderr if we redirected it.
+    try:
+        original = getattr(logger, "original_stderr", None)
+        if original is not None:
+            sys.stderr = original
+    except Exception:
+        pass
     sys.exit(exit_code)
 
 
@@ -139,25 +168,70 @@ class LoggerClass:
             logger = logging.getLogger("logiview_logo8")
             logger.setLevel(logging_level)
             logger.propagate = False
-
-            # Syslog handler
-            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-            syslog_format = logging.Formatter("%(name)s[%(process)d]: %(levelname)s - %(message)s")
-            syslog_handler.setFormatter(syslog_format)
-            logger.addHandler(syslog_handler)
-
-            # Console handler
+            
+            # Console handler (always available)
             console_handler = logging.StreamHandler()
-            console_format = logging.Formatter("%(levelname)s - %(message)s")
+            console_format = logging.Formatter(
+                "%(asctime)s %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            )
             console_handler.setFormatter(console_format)
             logger.addHandler(console_handler)
 
-            # Capture stderr
+            # Optional syslog handler (mainly for Linux). Fail gracefully on Windows.
+            try:
+                if os.name != "nt":
+                    syslog_handler = logging.handlers.SysLogHandler(address="/dev/log")
+                    syslog_format = logging.Formatter(
+                        "%(name)s[%(process)d]: %(levelname)s - %(message)s"
+                    )
+                    syslog_handler.setFormatter(syslog_format)
+                    logger.addHandler(syslog_handler)
+            except Exception as e:
+                # Do not abort if syslog is unavailable; just log to console/file.
+                console_handler.handle(
+                    logging.LogRecord(
+                        name=logger.name,
+                        level=logging.WARNING,
+                        pathname=__file__,
+                        lineno=0,
+                        msg=f"Syslog handler not available: {e}",
+                        args=(),
+                        exc_info=None,
+                    )
+                )
+
+            # Rotating file handler for detailed debugging
+            file_handler = logging.handlers.RotatingFileHandler(
+                "logiview_logo8.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            )
+            file_format = logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] %(filename)s:%(lineno)d - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            )
+            file_handler.setFormatter(file_format)
+            logger.addHandler(file_handler)
+
+            # Capture stderr into a buffer, but keep original for later restore
             captured_output = io.StringIO()
             self.original_stderr = sys.stderr
+            self.captured_stderr = captured_output
+            # Expose on logger so other code can restore it (MainClass.main_loop)
+            logger.original_stderr = self.original_stderr
+            logger.captured_stderr = captured_output
             sys.stderr = captured_output
 
-            logger.debug("Logger initialized.")
+            # Ensure stderr is restored on any interpreter shutdown path.
+            def _restore_stderr(orig_stderr):
+                try:
+                    if orig_stderr is not None:
+                        sys.stderr = orig_stderr
+                except Exception:
+                    pass
+
+            atexit.register(_restore_stderr, self.original_stderr)
+
+            logger.debug("Logger initialized (console + file handlers).")
             return logger
         except Exception as e:
             print(f"Error setting up logger: {e}")
@@ -206,7 +280,6 @@ def get_temperature_value(cnx_pool: pooling.MySQLConnectionPool, column_name: st
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     val = int(result[0])
-                    logger.debug(f"Got {column_name}={val}")
                     cnx.rollback()
                     return val
                 else:
@@ -294,6 +367,9 @@ class Algorithm:
         self.pump_runtime_PT2T1 = 0
         self.pump_offtime_PT2T1 = 0
 
+        # Track last boiler-off debug signature to avoid repeated logs.
+        self.last_boiler_off_sig = None
+
         # Rule definitions for display and status tracking
         self.rules = [
             {
@@ -339,6 +415,7 @@ class Algorithm:
                 vm_address = "V0.1"
                 bit_position = 0
                 old_state = self.pump_state_PT1T2
+                applied_state = state
                 self.plc_handler.write_bit(vm_address, bit_position, state)
                 
                 # Verify the write operation
@@ -346,24 +423,28 @@ class Algorithm:
                     verification = self.plc_handler.read_bit(vm_address, bit_position)
                     if verification != state:
                         self.logger.error(f"PT1T2 write verification failed: wanted {state}, got {verification}")
+                        applied_state = verification
                     else:
                         self.logger.debug(f"PT1T2 write verified successfully: {state}")
                 except Exception as verify_e:
                     self.logger.error(f"PT1T2 write verification error: {verify_e}")
                 
-                self.pump_state_PT1T2 = state
-                if state:
+                self.pump_state_PT1T2 = applied_state
+                if applied_state:
                     self.pump_runtime_PT1T2 = 0
                 else:
-                    self.pump_offtime_PT1T2 = 0
+                    # Only reset offtime when we actually turn it off
+                    if not state:
+                        self.pump_offtime_PT1T2 = 0
                 
-                if old_state != state:
-                    self.logger.info(f"Pump {pump_name} state changed: {old_state} -> {state}")
+                if old_state != applied_state:
+                    self.logger.info(f"Pump {pump_name} state changed: {old_state} -> {applied_state}")
 
             elif pump_name == "PT2T1":
                 vm_address = "V0.0"
                 bit_position = 0
                 old_state = self.pump_state_PT2T1
+                applied_state = state
                 self.plc_handler.write_bit(vm_address, bit_position, state)
                 
                 # Verify the write operation
@@ -371,21 +452,24 @@ class Algorithm:
                     verification = self.plc_handler.read_bit(vm_address, bit_position)
                     if verification != state:
                         self.logger.error(f"PT2T1 write verification failed: wanted {state}, got {verification}")
+                        applied_state = verification
                     else:
                         self.logger.debug(f"PT2T1 write verified successfully: {state}")
                 except Exception as verify_e:
                     self.logger.error(f"PT2T1 write verification error: {verify_e}")
                 
-                self.pump_state_PT2T1 = state
-                if state:
+                self.pump_state_PT2T1 = applied_state
+                if applied_state:
                     self.pump_runtime_PT2T1 = 0
                 else:
-                    self.pump_offtime_PT2T1 = 0
+                    # Only reset offtime when we actually turn it off
+                    if not state:
+                        self.pump_offtime_PT2T1 = 0
                 
-                if old_state != state:
-                    self.logger.info(f"Pump {pump_name} state changed: {old_state} -> {state}")
+                if old_state != applied_state:
+                    self.logger.info(f"Pump {pump_name} state changed: {old_state} -> {applied_state}")
 
-            self.logger.debug(f"Set pump {pump_name} to {'ON' if state else 'OFF'} (PLC: {vm_address}.{bit_position})")
+            self.logger.debug(f"Set pump {pump_name} to {'ON' if applied_state else 'OFF'} (PLC: {vm_address}.{bit_position})")
         except Exception as e:
             self.logger.error(f"Failed to set pump {pump_name} to {state}: {e}")
             raise
@@ -414,30 +498,29 @@ class Algorithm:
         Always update the Boiler OFF rule observed values.
         This method calls the energy difference function to update the actual values.
         """
-        _ = self.should_transfer_tank2_to_tank1(temp)
+        _ = self.should_transfer_tank2_to_tank1(temp, log_debug=False)
 
     def synchronize_pump_states(self, status: PumpStatus) -> None:
         """
-        Synchronize internal pump states with actual PLC status.
-        This helps detect and correct discrepancies.
+        Observe PLC statuses and log mismatches. Do not overwrite internal states,
+        to avoid race conditions and counter resets that cause pump flapping.
         """
-        # Check PT1T2 synchronization
         if self.pump_state_PT1T2 != status.PT1T2:
-            self.logger.warning(f"PT1T2 state mismatch: internal={self.pump_state_PT1T2}, PLC={status.PT1T2}")
+            self.logger.warning(
+                f"PT1T2 state mismatch observed: internal={self.pump_state_PT1T2}, PLC={status.PT1T2}"
+            )
+            self.logger.debug("Reconciling PT1T2 state to PLC observation without resetting counters.")
+            # Preserve counters so min on/off timers are not restarted by transient mismatches.
+            # update_pump_counter() will naturally realign runtime/offtime on the next tick.
             self.pump_state_PT1T2 = status.PT1T2
-            if status.PT1T2:
-                self.pump_runtime_PT1T2 = 0
-            else:
-                self.pump_offtime_PT1T2 = 0
-                
-        # Check PT2T1 synchronization
         if self.pump_state_PT2T1 != status.PT2T1:
-            self.logger.warning(f"PT2T1 state mismatch: internal={self.pump_state_PT2T1}, PLC={status.PT2T1}")
+            self.logger.warning(
+                f"PT2T1 state mismatch observed: internal={self.pump_state_PT2T1}, PLC={status.PT2T1}"
+            )
+            self.logger.debug("Reconciling PT2T1 state to PLC observation without resetting counters.")
+            # Preserve counters so we do not zero out offtime when PLC echo lags behind setpoint.
+            # update_pump_counter() will realign runtime/offtime after the state change.
             self.pump_state_PT2T1 = status.PT2T1
-            if status.PT2T1:
-                self.pump_runtime_PT2T1 = 0
-            else:
-                self.pump_offtime_PT2T1 = 0
 
     def execute_algorithm(self, temp: TemperatureReadings, status: PumpStatus) -> None:
         """
@@ -446,7 +529,7 @@ class Algorithm:
         """
         self.logger.debug(">>> Executing Algorithm.")
         
-        # Synchronize internal pump states with PLC status first
+        # Observe PLC status first (no longer overriding internal states).
         self.synchronize_pump_states(status)
         
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -520,19 +603,36 @@ class Algorithm:
         )
         if emergency_condition:
             self.rule_one_active = True
-            if not status.PT1T2:
+
+            # If either our internal state or the PLC-reported status shows the pump OFF, force it ON.
+            # This covers cases where the PLC rung resets the coil after we write it, or where a previous
+            # mismatch kept the pump_state false.
+            plc_says_off = (status.PT1T2 is False)
+            if (not self.pump_state_PT1T2) or plc_says_off:
                 self.set_transfer_pump("PT1T2", True)
-                self.logger.warning("Rule One triggered: Overheat => PT1T2 ON")
+                self.logger.warning(
+                    "Rule One triggered: Overheat => PT1T2 ON (forcing ON because PLC/off or internal/off)"
+                )
+            # If PLC still reports OFF while active, immediately retry once more to combat rung overrides.
+            if status.PT1T2 is False:
+                self.logger.error("Rule One active but PLC PT1T2=OFF; retrying force ON")
+                self.set_transfer_pump("PT1T2", True)
+            # Surface PLC observation in the rule values for the dashboard.
+            self.rules[0]["actual_values"].update({"PLC_PT1T2": status.PT1T2})
         else:
             if self.rule_one_active:
                 conditions_cleared = (
                     (temp.TRET is not None and temp.TRET <= RETURNS_TEMP_OFF_THRESHOLD) and
-                    (temp.TBTOP is not None and temp.TBTOP < BOILER_SAFE_THRESHOLD)
+                    (temp.TBTOP is not None and temp.TBTOP < BOILER_SAFE_THRESHOLD) and
+                    (temp.T1BOT is not None and temp.T1BOT <= CRITICAL_TANK_TEMP)
                 )
-                if conditions_cleared and self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
-                    self.set_transfer_pump("PT1T2", False)
+                # Clear as soon as temps are safe OR if pump isn't actually on (PLC mismatch),
+                # so the dashboard doesn't stay latched "ACTIVE" while pump is off.
+                if conditions_cleared or (not self.pump_state_PT1T2):
+                    if self.pump_state_PT1T2:
+                        self.set_transfer_pump("PT1T2", False)
                     self.rule_one_active = False
-                    self.logger.info("Rule One cleared: PT1T2 OFF after safe conditions.")
+                    self.logger.info("Rule One cleared: safe temps or pump not running -> PT1T2 OFF.")
         self.update_pump_counter("PT1T2")
 
     def apply_rule_two(self, temp: TemperatureReadings, status: PumpStatus) -> None:
@@ -554,12 +654,12 @@ class Algorithm:
             if (temp.T1BOT - temp.T3BOT) <= TEMP_DIFF_OFF_THRESHOLD:
                 pump_stop = True
 
-        if pump_start and not status.PT1T2 and self.pump_offtime_PT1T2 >= PUMP_MIN_OFF_TIME:
+        if pump_start and not self.pump_state_PT1T2 and self.pump_offtime_PT1T2 >= PUMP_MIN_OFF_TIME:
             self.set_transfer_pump("PT1T2", True)
             self.logger.info("Rule Two triggered: PT1T2 ON (normal operation).")
             self.rule_two_active = True
 
-        if pump_stop and status.PT1T2 and self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
+        if pump_stop and self.pump_state_PT1T2 and self.pump_runtime_PT1T2 >= PUMP_MIN_ON_TIME:
             self.set_transfer_pump("PT1T2", False)
             self.logger.info("Rule Two stopping: PT1T2 OFF (temp diff small).")
 
@@ -573,76 +673,119 @@ class Algorithm:
         Boiler OFF logic: Transfer heat from Tank 2 to Tank 1 if conditions are met.
         Uses a scaled energy approach with hysteresis to decide on running pump PT2T1.
         """
-        self.logger.debug("Running Boiler OFF Algorithm")
+        # Only log when state/inputs change to reduce noise.
+        temps_tuple = (
+            temp.T1TOP, temp.T1MID, temp.T1BOT,
+            temp.T2TOP, temp.T2MID, temp.T2BOT,
+            temp.T3TOP, temp.T3MID, temp.T3BOT,
+            temp.TRET, temp.TBTOP,
+        )
+        signature = (
+            temps_tuple,
+            status.PT2T1,
+            status.PT1T2,
+            self.pump_state_PT2T1,
+        )
+        debug_needed = signature != self.last_boiler_off_sig
+        self.last_boiler_off_sig = signature
+
+        if debug_needed:
+            self.logger.debug("Running Boiler OFF Algorithm")
         # Reset any boiler on flags.
         self.rule_one_active = False
         self.rule_two_active = False
         
-        # Only turn off PT1T2 if it's currently on
+        # Ensure PT1T2 is OFF in boiler-off mode
         if self.pump_state_PT1T2:
             self.set_transfer_pump("PT1T2", False)
             self.logger.debug("Boiler OFF: Turned off PT1T2 pump")
 
-        should_transfer = self.should_transfer_tank2_to_tank1(temp)
+        should_transfer = self.should_transfer_tank2_to_tank1(temp, log_debug=debug_needed)
+
         observed = self.rules[2]["actual_values"]
         observed["PT2T1_runtime"] = self.pump_runtime_PT2T1
         observed["PT2T1_offtime"] = self.pump_offtime_PT2T1
         observed["should_transfer"] = should_transfer
         observed["status_PT2T1"] = status.PT2T1
+        observed["internal_PT2T1"] = self.pump_state_PT2T1
         observed["PUMP_MIN_OFF_TIME"] = PUMP_MIN_OFF_TIME
+        observed["PUMP_MIN_ON_TIME"] = PUMP_MIN_ON_TIME
+        start_ready = should_transfer and (not self.pump_state_PT2T1) and (self.pump_offtime_PT2T1 >= PUMP_MIN_OFF_TIME)
+        start_wait = should_transfer and (not self.pump_state_PT2T1) and (self.pump_offtime_PT2T1 < PUMP_MIN_OFF_TIME)
+        observed["start_ready"] = start_ready
+        observed["start_wait"] = max(PUMP_MIN_OFF_TIME - self.pump_offtime_PT2T1, 0) if start_wait else 0
+        observed["reason"] = (
+            "Needs_heat_transfer" if should_transfer else "No_heat_needed"
+        )
+        observed["gated_by_min_off"] = start_wait
+        observed["gated_by_min_on"] = (not should_transfer) and self.pump_state_PT2T1 and (self.pump_runtime_PT2T1 < PUMP_MIN_ON_TIME)
+        observed["plc_mismatch"] = (self.pump_state_PT2T1 and (status.PT2T1 is False))
+        # Raw temps to explain the decision (hundredths of °C)
+        observed["temps_raw"] = {
+            "T1TOP": temp.T1TOP,
+            "T1MID": temp.T1MID,
+            "T1BOT": temp.T1BOT,
+            "T2TOP": temp.T2TOP,
+            "T2MID": temp.T2MID,
+            "T2BOT": temp.T2BOT,
+        }
         
-        self.logger.debug(f"Boiler OFF: should_transfer={should_transfer}, status.PT2T1={status.PT2T1}, "
-                         f"pump_offtime_PT2T1={self.pump_offtime_PT2T1}, PUMP_MIN_OFF_TIME={PUMP_MIN_OFF_TIME}")
-        self.logger.debug(f"Internal pump state PT2T1: {self.pump_state_PT2T1}, PLC status PT2T1: {status.PT2T1}")
+        if debug_needed:
+            self.logger.debug(
+                f"Boiler OFF: should_transfer={should_transfer}, "
+                f"internal_PT2T1={self.pump_state_PT2T1}, PLC_PT2T1={status.PT2T1}, "
+                f"offtime={self.pump_offtime_PT2T1}, runtime={self.pump_runtime_PT2T1}"
+            )
 
-        # Add cycle counter for debugging
-        if not hasattr(self, 'cycle_counter'):
-            self.cycle_counter = 0
-        self.cycle_counter += 1
-        
-        if self.cycle_counter % 10 == 0:  # Log every 10 cycles to avoid spam
-            self.logger.info(f"Cycle {self.cycle_counter}: Boiler OFF active, should_transfer={should_transfer}")
+        # Start condition: use internal state + min off-time
+        if start_ready:
+            self.logger.info(f"Boiler OFF: Starting PT2T1 (offtime {self.pump_offtime_PT2T1} >= {PUMP_MIN_OFF_TIME})")
+            self.set_transfer_pump("PT2T1", True)
 
-        if should_transfer:
-            condition_met = not status.PT2T1 and self.pump_offtime_PT2T1 >= PUMP_MIN_OFF_TIME
-            self.logger.debug(f"Transfer conditions: not status.PT2T1={not status.PT2T1}, "
-                             f"offtime >= min_off_time={self.pump_offtime_PT2T1 >= PUMP_MIN_OFF_TIME}, "
-                             f"combined condition={condition_met}")
-            
-            if condition_met:
-                self.logger.info(f"Attempting to start PT2T1: status.PT2T1={status.PT2T1}, "
-                               f"offtime={self.pump_offtime_PT2T1}, min_off={PUMP_MIN_OFF_TIME}")
-                self.set_transfer_pump("PT2T1", True)
-                self.logger.info("Boiler OFF: Starting PT2T1 (scaled-energy, hysteresis).")
-            elif status.PT2T1:
-                self.logger.debug("PT2T1 pump already running (Boiler OFF).")
-            else:
-                self.logger.warning(f"Should transfer but conditions not met: status.PT2T1={status.PT2T1}, "
-                                  f"offtime={self.pump_offtime_PT2T1}, min_off_time={PUMP_MIN_OFF_TIME}")
-        else:
-            if status.PT2T1 and self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
+        # Waiting to start: transfer wanted but min off-time not met
+        elif start_wait and debug_needed:
+            self.logger.debug(
+                f"Boiler OFF: Transfer wanted but waiting min off-time "
+                f"({self.pump_offtime_PT2T1}/{PUMP_MIN_OFF_TIME})"
+            )
+
+        # Stop condition: only when not needed and min on-time satisfied
+        elif (not should_transfer) and self.pump_state_PT2T1:
+            if self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
+                self.logger.info(f"Boiler OFF: Stopping PT2T1 (runtime {self.pump_runtime_PT2T1} >= {PUMP_MIN_ON_TIME})")
                 self.set_transfer_pump("PT2T1", False)
-                self.logger.info("Boiler OFF: Stopping PT2T1, conditions no longer met.")
-            elif status.PT2T1 and self.pump_runtime_PT2T1 < PUMP_MIN_ON_TIME:
-                self.logger.debug(f"Waiting for minimum run time: {self.pump_runtime_PT2T1}/{PUMP_MIN_ON_TIME}")
             else:
-                self.logger.debug("PT2T1 is off or conditions not met (Boiler OFF).")
+                self.logger.debug(
+                    f"Boiler OFF: Holding PT2T1 ON to meet min runtime "
+                    f"({self.pump_runtime_PT2T1}/{PUMP_MIN_ON_TIME})"
+                )
 
+        # If transfer is needed and we think pump is ON but PLC says OFF, retry force-on and log.
+        if should_transfer and self.pump_state_PT2T1 and (status.PT2T1 is False):
+            self.logger.error("Boiler OFF: PT2T1 commanded ON but PLC reports OFF; retrying force ON")
+            self.set_transfer_pump("PT2T1", True)
+
+        # Always update pump counters after decisions
         self.update_pump_counter("PT2T1")
 
-        # Additional safety check: if T1BOT exceeds T3TOP by at least 2°C, stop PT2T1.
+        # Additional safety: if T1BOT exceeds T3TOP by at least 2°C, stop PT2T1 (respect min runtime).
         if (temp.T1BOT is not None) and (temp.T3TOP is not None):
             temp_diff = temp.T1BOT - temp.T3TOP
-            observed["T1BOT_T3TOP_diff"] = temp_diff / 100.0  # Convert to degrees for display
-            if temp_diff >= 200:
-                if status.PT2T1 and self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
+            observed["T1BOT_T3TOP_diff"] = temp_diff / 100.0
+            if temp_diff >= 200 and self.pump_state_PT2T1:
+                if self.pump_runtime_PT2T1 >= PUMP_MIN_ON_TIME:
                     self.set_transfer_pump("PT2T1", False)
                     self.logger.info(f"Stopping PT2T1: T1BOT is {temp_diff/100.0:.1f}°C higher than T3TOP.")
-                elif status.PT2T1:
-                    self.logger.debug(f"Waiting for min run time before stopping PT2T1: {self.pump_runtime_PT2T1}")
+                else:
+                    if debug_needed:
+                        self.logger.debug(
+                            f"Safety wants OFF but waiting min runtime for PT2T1: "
+                            f"{self.pump_runtime_PT2T1}/{PUMP_MIN_ON_TIME}"
+                        )
+
         self.boiler_off_active = True
 
-    def should_transfer_tank2_to_tank1(self, temp: TemperatureReadings) -> bool:
+    def should_transfer_tank2_to_tank1(self, temp: TemperatureReadings, log_debug: bool = True) -> bool:
         """
         Determines if the scaled energy difference between Tank 2 and Tank 1
         warrants a heat transfer (from T2 -> T1).
@@ -664,24 +807,30 @@ class Algorithm:
         scaled_energy_t2 = (energy_tank2 / self.tank_volumes['Tank2']) * self.tank_volumes['Tank1']
         diff = scaled_energy_t2 - energy_tank1
 
-        # Determine transfer decision based on pump state
-        transfer_decision = False
-        decision_reason = ""
-        
+        # Determine transfer decision based on internal pump state (hysteresis)
         if not self.pump_state_PT2T1:
             transfer_decision = diff > ENERGY_DIFF_START
-            decision_reason = f"Pump OFF: diff ({diff:.2f}) > START_THRESHOLD ({ENERGY_DIFF_START})" if transfer_decision else f"Pump OFF: diff ({diff:.2f}) <= START_THRESHOLD ({ENERGY_DIFF_START})"
+            decision_reason = (
+                f"Pump OFF: diff ({diff:.2f}) > START_THRESHOLD ({ENERGY_DIFF_START})"
+                if transfer_decision else
+                f"Pump OFF: diff ({diff:.2f}) <= START_THRESHOLD ({ENERGY_DIFF_START})"
+            )
         else:
             transfer_decision = diff > ENERGY_DIFF_STOP
-            decision_reason = f"Pump ON: diff ({diff:.2f}) > STOP_THRESHOLD ({ENERGY_DIFF_STOP})" if transfer_decision else f"Pump ON: diff ({diff:.2f}) <= STOP_THRESHOLD ({ENERGY_DIFF_STOP})"
+            decision_reason = (
+                f"Pump ON: diff ({diff:.2f}) > STOP_THRESHOLD ({ENERGY_DIFF_STOP})"
+                if transfer_decision else
+                f"Pump ON: diff ({diff:.2f}) <= STOP_THRESHOLD ({ENERGY_DIFF_STOP})"
+            )
 
-        self.logger.debug(
-            f"Energy Transfer Analysis: "
-            f"Avg T1: {avg_temp_t1:.2f}°C => E1: {energy_tank1:.2f} Wh, "
-            f"Avg T2: {avg_temp_t2:.2f}°C => E2: {energy_tank2:.2f} Wh, "
-            f"Scaled E2->T1: {scaled_energy_t2:.2f} Wh => diff: {diff:.2f} Wh. "
-            f"Decision: {transfer_decision} ({decision_reason})"
-        )
+        if log_debug:
+            self.logger.debug(
+                f"Energy Transfer Analysis: "
+                f"Avg T1: {avg_temp_t1:.2f}°C => E1: {energy_tank1:.2f} Wh, "
+                f"Avg T2: {avg_temp_t2:.2f}°C => E2: {energy_tank2:.2f} Wh, "
+                f"Scaled E2->T1: {scaled_energy_t2:.2f} Wh => diff: {diff:.2f} Wh. "
+                f"Decision: {transfer_decision} ({decision_reason})"
+            )
 
         self.rules[2]["actual_values"].update({
             "Tank1_avg_temp": round(avg_temp_t1, 2),
@@ -709,6 +858,11 @@ class MainClass:
         self.logger = logger.logger
         self.pushbullet = pushbullet
         self.parser = parser
+
+        # Track last seen values to suppress noisy debug when unchanged.
+        self.last_temp_values = {}
+        self.last_status = None
+        self.last_debug_signature = None
 
         try:
             self.cnx_pool = mysql.connector.pooling.MySQLConnectionPool(
@@ -745,7 +899,7 @@ class MainClass:
             self.logger.error(f"Flask server start error: {e}")
             exit_program(self.logger, self.pushbullet, 1, "Flask server failed")
 
-    def update_status_in_db(self, column_name: str, value: bool) -> None:
+    def update_status_in_db(self, column_name: str, value: bool, log_change: bool = True) -> None:
         """
         Update the latest record's status in the DB.
         """
@@ -756,7 +910,8 @@ class MainClass:
                 with cnx.cursor() as cursor:
                     cursor.execute(sql)
                     cnx.commit()
-                    self.logger.debug(f"Updated {column_name} to {val_int} in DB")
+                    if log_change:
+                        self.logger.debug(f"Updated {column_name} to {val_int} in DB")
         except mysql.connector.Error as err:
             self.logger.error(f"DB error updating {column_name}: {err}")
 
@@ -792,12 +947,16 @@ class MainClass:
             algorithm = Algorithm(plc_handler, self.logger)
             self.logger.info("Algorithm created successfully.")
 
+            loop_counter = 0
+
             while True:
+                loop_counter += 1
                 complete_data = True
                 for col in TEMP_COLUMNS:
                     val = get_temperature_value(self.cnx_pool, col, self.logger)
                     if val is None:
                         complete_data = False
+                    self.last_temp_values[col] = val
                     setattr(self.temp, col, val)
 
                 if complete_data:
@@ -825,17 +984,33 @@ class MainClass:
                         self.logger.info(f"PLC Status change - PT2T1: {old_pt2t1} -> {self.status.PT2T1}")
                     if old_pt1t2 != self.status.PT1T2:
                         self.logger.info(f"PLC Status change - PT1T2: {old_pt1t2} -> {self.status.PT1T2}")
-                        
-                    self.logger.debug(f"PLC Status read: BP={self.status.BP}, PT2T1={self.status.PT2T1}, PT1T2={self.status.PT1T2}")
+                    
+                    status_tuple = (self.status.BP, self.status.PT2T1, self.status.PT1T2)
+                    status_changed = (self.last_status != status_tuple)
+                    self.last_status = status_tuple
                 except Exception as e:
                     self.logger.error(f"PLC read error: {e}")
+                    status_changed = False
 
                 try:
-                    self.update_status_in_db("BP", self.status.BP)
-                    self.update_status_in_db("PT2T1", self.status.PT2T1)
-                    self.update_status_in_db("PT1T2", self.status.PT1T2)
+                    self.update_status_in_db("BP", self.status.BP, log_change=(old_bp != self.status.BP))
+                    self.update_status_in_db("PT2T1", self.status.PT2T1, log_change=(old_pt2t1 != self.status.PT2T1))
+                    self.update_status_in_db("PT1T2", self.status.PT1T2, log_change=(old_pt1t2 != self.status.PT1T2))
                 except Exception as e:
                     self.logger.error(f"Error updating DB statuses: {e}")
+
+                # Compact change log per loop (single line) only when overall signature changes.
+                try:
+                    temps_tuple = tuple(self.last_temp_values.get(name) for name in TEMP_COLUMNS)
+                    signature = (temps_tuple, status_tuple, algorithm.pump_state_PT1T2, algorithm.pump_state_PT2T1)
+                    if signature != self.last_debug_signature:
+                        temps_inline = " ".join(f"{name}:{self.last_temp_values.get(name)}" for name in TEMP_COLUMNS)
+                        status_inline = f"BP:{self.status.BP} PT2T1:{self.status.PT2T1} PT1T2:{self.status.PT1T2}"
+                        alg_inline = f"alg_PT1T2:{algorithm.pump_state_PT1T2} alg_PT2T1:{algorithm.pump_state_PT2T1}"
+                        self.logger.debug(f"Loop {loop_counter} | {temps_inline} | {status_inline} | {alg_inline}")
+                        self.last_debug_signature = signature
+                except Exception as debug_e:
+                    self.logger.error(f"Error building loop debug output: {debug_e}")
 
                 algorithm.execute_algorithm(self.temp, self.status)
                 time.sleep(1)
@@ -905,4 +1080,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Ensure stderr is restored even if something bypasses exit_program/atexit.
+        try:
+            fallback_logger = logging.getLogger("logiview_logo8")
+            original = getattr(fallback_logger, "original_stderr", None)
+            if original is not None:
+                sys.stderr = original
+        except Exception:
+            pass

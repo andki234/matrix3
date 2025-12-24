@@ -60,6 +60,7 @@ import argparse          # Parser for command-line options and arguments
 import io                # Core tools for working with streams
 import logging           # Logging library for Python
 import logging.handlers  # Additional handlers for the logging module
+import os                # OS interfaces
 import subprocess        # To spawn new processes, connect to their input/output/error pipes
 import sys               # Access to Python interpreter variables
 import time              # Time-related functions
@@ -75,6 +76,8 @@ setproctitle.setproctitle("logiview_pm")
 # Set to appropriate value to for logging level
 LOGGING_LEVEL = logging.WARNING
 USE_PUSHBULLET = True
+# Default python interpreter for monitored processes (virtualenv "myenv" under project)
+DEFAULT_PYTHON = "/home/pi/logiview/myenv/bin/python"
 
 
 class PushBullet:
@@ -127,8 +130,13 @@ class LogiviewPMserver:
             parser.add_argument("-u", "--user", required=False, help="MySQL server username", default="pi")
             parser.add_argument("-p", "--password", required=True, help="MySQL password")
             parser.add_argument("-a", "--apikey", required=True, help="API-Key for pushbullet")
+            parser.add_argument("--python", required=False, help="Python interpreter (default: myenv)", default=DEFAULT_PYTHON)
             self.args = parser.parse_args()
             self.logger.info("Parsed command-line arguments successfully!")
+
+            self.python_executable = self.args.python if os.path.exists(self.args.python) else "python3"
+            if not os.path.exists(self.args.python):
+                self.logger.warning(f"Specified python not found: {self.args.python}, falling back to system python3")
 
             # Create Pushbullet object
             self.pushbullet = PushBullet(USE_PUSHBULLET, logger, self.args.apikey, "Logiview PM")
@@ -191,7 +199,7 @@ class LogiviewPMserver:
             except subprocess.CalledProcessError:
                 # The script is not running, so start it with its associated arguments.
                 self.logger.warning(f"{title} is not running. Starting it...")
-                cmd = ["authbind", "python3", script] + args if use_authbind else ["python3", script] + args
+                cmd = ["authbind", self.python_executable, script] + args if use_authbind else [self.python_executable, script] + args
                 print(f"{cmd}\r\n")
                 # If use_setsid is True, then use setsid to run the process in its own session
                 cmd = ['setsid'] + cmd if use_setsid else cmd

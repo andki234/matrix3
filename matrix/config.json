@@ -1,4 +1,5 @@
 {
     "wifi_ssid": "zzzz",
-    "wifi_password": "xxx"
+    "wifi_password": "xxx",
+    "cerbo_ip": "192.168.0.210"
 }

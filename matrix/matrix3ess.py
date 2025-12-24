@@ -8,6 +8,7 @@ import json
 import network
 from interstate75 import Interstate75, DISPLAY_INTERSTATE75_64X32
 import gc
+from datetime import datetime
 
 
 # Try to import socket - works on both MicroPython and CPython
@@ -17,16 +18,31 @@ except ImportError:
     print("Socket module not available")
     socket = None
 
-# Simple logger for debug messages (compatible with MicroPython)
+# Enhanced logger for debug messages (compatible with MicroPython)
 class SimpleLogger:
+    def __init__(self):
+        self.log_counts = {}
+        
+    def _rate_limited_log(self, level, message, limit=20):
+        """Rate limit logs to prevent spam."""
+        if message not in self.log_counts:
+            self.log_counts[message] = 0
+        self.log_counts[message] += 1
+        
+        if self.log_counts[message] == 1 or self.log_counts[message] % limit == 0:
+            timestamp = time.time()
+            print(f"{level} [{timestamp:.3f}]: {message}")
+            if self.log_counts[message] > 1:
+                print(f"  (This message has occurred {self.log_counts[message]} times)")
+    
     def debug(self, message):
         print(f"DEBUG: {message}")
     def info(self, message):
         print(f"INFO: {message}")
     def warning(self, message):
-        print(f"WARNING: {message}")
+        self._rate_limited_log("WARNING", message, 10)
     def error(self, message):
-        print(f"ERROR: {message}")
+        self._rate_limited_log("ERROR", message, 5)
     def critical(self, message):
         print(f"CRITICAL: {message}")
         
@@ -76,6 +92,13 @@ class VictronDataFetcher:
         self.pv_connected = False
         self.pv_buffer = ""
         
+        # Error tracking for enhanced stability
+        self.connection_errors = {'battery': 0, 'ac_power': 0, 'pv_power': 0}
+        self.data_errors = {'battery': 0, 'ac_power': 0, 'pv_power': 0}
+        self.last_successful_read = {'battery': None, 'ac_power': None, 'pv_power': None}
+        self.last_error_logged = {'battery': 0, 'ac_power': 0, 'pv_power': 0}
+        self.consecutive_failures = 0
+        
         # Battery data storage
         self.last_soc = 0
         self.last_battery_power = 0
@@ -99,16 +122,17 @@ class VictronDataFetcher:
         print(f"  Battery port: {battery_port}")
         print(f"  AC Power port: {ac_power_port}")
         print(f"  PV Power port: {pv_power_port}")
+        logger.info(f"VictronDataFetcher initialized for {cerbo_ip} - Battery:{battery_port}, AC:{ac_power_port}, PV:{pv_power_port}")
     
     def connect_battery(self):
         """
-        Connect to Cerbo GX battery data port.
+        Connect to Cerbo GX battery data port with enhanced error handling.
         
         Returns:
             bool: True if connection successful, False otherwise
         """
         if not socket:
-            print("ERROR: Socket module not available")
+            logger.error("Socket module not available")
             return False
             
         try:
@@ -120,24 +144,39 @@ class VictronDataFetcher:
             self.battery_sock.settimeout(5.0)
             self.battery_sock.connect((self.cerbo_ip, self.battery_port))
             self.battery_connected = True
+            self.connection_errors['battery'] = 0  # Reset error counter
             print("Battery port connected successfully")
+            logger.info("Battery port connected successfully")
             return True
             
+        except socket.timeout:
+            self.connection_errors['battery'] += 1
+            logger.error(f"Battery connection timeout - attempt #{self.connection_errors['battery']}")
+            self.battery_connected = False
+            self.battery_sock = None
+            return False
+        except ConnectionRefusedError:
+            self.connection_errors['battery'] += 1
+            logger.error(f"Battery connection refused - service may not be running (attempt #{self.connection_errors['battery']})")
+            self.battery_connected = False
+            self.battery_sock = None
+            return False
         except Exception as e:
-            print(f"Battery connection failed: {e}")
+            self.connection_errors['battery'] += 1
+            logger.error(f"Battery connection failed (attempt #{self.connection_errors['battery']}): {type(e).__name__}: {e}")
             self.battery_connected = False
             self.battery_sock = None
             return False
     
     def connect_ac_power(self):
         """
-        Connect to Cerbo GX AC power data port.
+        Connect to Cerbo GX AC power data port with enhanced error handling.
         
         Returns:
             bool: True if connection successful, False otherwise
         """
         if not socket:
-            print("ERROR: Socket module not available")
+            logger.error("Socket module not available")
             return False
             
         try:
@@ -149,24 +188,39 @@ class VictronDataFetcher:
             self.ac_sock.settimeout(5.0)
             self.ac_sock.connect((self.cerbo_ip, self.ac_power_port))
             self.ac_connected = True
+            self.connection_errors['ac_power'] = 0  # Reset error counter
             print("AC power port connected successfully")
+            logger.info("AC power port connected successfully")
             return True
             
+        except socket.timeout:
+            self.connection_errors['ac_power'] += 1
+            logger.error(f"AC power connection timeout - attempt #{self.connection_errors['ac_power']}")
+            self.ac_connected = False
+            self.ac_sock = None
+            return False
+        except ConnectionRefusedError:
+            self.connection_errors['ac_power'] += 1
+            logger.error(f"AC power connection refused - service may not be running (attempt #{self.connection_errors['ac_power']})")
+            self.ac_connected = False
+            self.ac_sock = None
+            return False
         except Exception as e:
-            print(f"AC power connection failed: {e}")
+            self.connection_errors['ac_power'] += 1
+            logger.error(f"AC power connection failed (attempt #{self.connection_errors['ac_power']}): {type(e).__name__}: {e}")
             self.ac_connected = False
             self.ac_sock = None
             return False
     
     def connect_pv_power(self):
         """
-        Connect to Cerbo GX PV power data port.
+        Connect to Cerbo GX PV power data port with enhanced error handling.
         
         Returns:
             bool: True if connection successful, False otherwise
         """
         if not socket:
-            print("ERROR: Socket module not available")
+            logger.error("Socket module not available")
             return False
             
         try:
@@ -178,11 +232,26 @@ class VictronDataFetcher:
             self.pv_sock.settimeout(5.0)
             self.pv_sock.connect((self.cerbo_ip, self.pv_power_port))
             self.pv_connected = True
+            self.connection_errors['pv_power'] = 0  # Reset error counter
             print("PV power port connected successfully")
+            logger.info("PV power port connected successfully")
             return True
             
+        except socket.timeout:
+            self.connection_errors['pv_power'] += 1
+            logger.error(f"PV power connection timeout - attempt #{self.connection_errors['pv_power']}")
+            self.pv_connected = False
+            self.pv_sock = None
+            return False
+        except ConnectionRefusedError:
+            self.connection_errors['pv_power'] += 1
+            logger.error(f"PV power connection refused - service may not be running (attempt #{self.connection_errors['pv_power']})")
+            self.pv_connected = False
+            self.pv_sock = None
+            return False
         except Exception as e:
-            print(f"PV power connection failed: {e}")
+            self.connection_errors['pv_power'] += 1
+            logger.error(f"PV power connection failed (attempt #{self.connection_errors['pv_power']}): {type(e).__name__}: {e}")
             self.pv_connected = False
             self.pv_sock = None
             return False
@@ -202,12 +271,22 @@ class VictronDataFetcher:
         
         if success_count == 3:
             print("All connections established successfully")
+            logger.info("All 3 connections established successfully")
             return True
         elif success_count >= 1:
+            missing_ports = []
+            if not battery_ok:
+                missing_ports.append("battery")
+            if not ac_ok:
+                missing_ports.append("AC power")
+            if not pv_ok:
+                missing_ports.append("PV power")
             print(f"{success_count}/3 connections successful - partial functionality")
+            logger.warning(f"Partial connection - missing: {', '.join(missing_ports)}")
             return True
         else:
             print("All connections failed")
+            logger.critical("Failed to connect to ANY ports - check network connectivity")
             return False
     
     def disconnect_battery(self):
@@ -258,7 +337,7 @@ class VictronDataFetcher:
     
     def read_battery_data(self):
         """
-        Read and parse battery data from Cerbo GX.
+        Read and parse battery data from Cerbo GX with enhanced error handling.
         
         Returns:
             dict: Parsed battery data or None if no valid data available
@@ -270,7 +349,11 @@ class VictronDataFetcher:
             # Receive data
             data = self.battery_sock.recv(1024)
             if not data:
-                print("No battery data received - connection may be closed")
+                # Log connection drops but not too frequently
+                current_time = time.time()
+                if current_time - self.last_error_logged['battery'] > 30:  # Log every 30 seconds max
+                    logger.warning("No battery data received - connection may be closed")
+                    self.last_error_logged['battery'] = current_time
                 self.battery_connected = False
                 return None
             
@@ -303,9 +386,13 @@ class VictronDataFetcher:
                     
                     # Validate data
                     if soc is None or voltage is None or current is None:
+                        self.data_errors['battery'] += 1
+                        if self.data_errors['battery'] % 100 == 1:
+                            available_fields = list(data.keys())
+                            logger.warning(f"Battery data missing required fields. Available: {available_fields}")
                         continue  # Skip incomplete data
                     
-                    # Convert to appropriate types
+                    # Convert to appropriate types and validate ranges
                     soc = int(float(soc))
                     voltage = float(voltage)
                     current = float(current)
@@ -314,11 +401,11 @@ class VictronDataFetcher:
                     
                     # Basic validation
                     if not (0 <= soc <= 100):
-                        print(f"Invalid SoC: {soc}%")
+                        logger.warning(f"Invalid SoC: {soc}% (expected 0-100)")
                         continue
                     
                     if not (10 <= voltage <= 60):
-                        print(f"Invalid voltage: {voltage}V")
+                        logger.warning(f"Invalid voltage: {voltage}V (expected 10-60V)")
                         continue
                     
                     # Update stored values
@@ -328,6 +415,11 @@ class VictronDataFetcher:
                     self.last_current = current
                     self.last_capacity_ah = capacity_ah
                     self.last_battery_update_time = time.time()
+                    
+                    # Record successful read
+                    self.last_successful_read['battery'] = time.time()
+                    self.data_errors['battery'] = 0  # Reset error counter
+                    self.consecutive_failures = 0  # Reset failure counter
                     
                     # Return parsed data
                     return {
@@ -340,10 +432,13 @@ class VictronDataFetcher:
                     }
                     
                 except json.JSONDecodeError as e:
-                    print(f"Battery JSON decode error: {e}")
+                    self.data_errors['battery'] += 1
+                    if self.data_errors['battery'] % 20 == 1:  # Log every 20 JSON errors
+                        logger.error(f"Battery JSON decode error (#{self.data_errors['battery']}): {e}. Sample: {line[:100]}...")
                     continue
                 except Exception as e:
-                    print(f"Battery data parsing error: {e}")
+                    self.data_errors['battery'] += 1
+                    logger.error(f"Battery data parsing error: {type(e).__name__}: {e}")
                     continue
             
             return None  # No valid data in this batch
@@ -355,11 +450,16 @@ class VictronDataFetcher:
                 # Timeout - not necessarily an error
                 return None
             else:
-                print(f"Battery socket error: {e}")
+                logger.error(f"Battery socket error: {e}")
                 self.battery_connected = False
                 return None
+        except UnicodeDecodeError as e:
+            self.data_errors['battery'] += 1
+            if self.data_errors['battery'] % 10 == 1:
+                logger.error(f"Battery unicode decode error: {e}")
+            return None
         except Exception as e:
-            print(f"Unexpected error reading battery data: {e}")
+            logger.error(f"Unexpected error reading battery data: {type(e).__name__}: {e}")
             self.battery_connected = False
             return None
     
@@ -517,18 +617,52 @@ class VictronDataFetcher:
                     
                     # Extract PV power - look for common PV power field names
                     pv_power = None
+                    field_found = None
                     
-                    # Try different possible field names for PV power
-                    for field_name in ['PV_POWER', 'SOLAR_POWER', 'DC_POWER', 'MPPT_POWER', 'POWER', 'P']:
+                    # Try different possible field names for PV power (based on log analysis)
+                    for field_name in ['PV_POWER', 'SOLAR_POWER', 'DC_POWER', 'MPPT_POWER', 'POWER', 'P', 'PV_T1_POWER', 'PV_T2_POWER']:
                         if field_name in data:
                             pv_power = float(data[field_name])
-                            if self._pv_debug_counter % 20 == 1:
-                                print(f"PV Debug: Found power in field '{field_name}': {pv_power}W")
+                            field_found = field_name
+                            if self._pv_debug_counter % 500 == 1:
+                                logger.debug(f"Using PV power field '{field_found}': {pv_power}W")
                             break
                     
+                    # If no power field found, try to calculate from voltage and current
                     if pv_power is None:
-                        if self._pv_debug_counter % 20 == 1:
-                            print(f"PV Debug: No power field found in available fields: {list(data.keys())}")
+                        # Try to find voltage and current fields
+                        voltage_fields = ['PV_T1_VOLT', 'PV_T2_VOLT', 'PV_VOLT', 'VOLTAGE']
+                        current_fields = ['PV_T1_AMP', 'PV_T2_AMP', 'PV_AMP', 'CURRENT']
+                        
+                        voltage = None
+                        current = None
+                        
+                        for v_field in voltage_fields:
+                            if v_field in data:
+                                voltage = float(data[v_field])
+                                break
+                        
+                        for c_field in current_fields:
+                            if c_field in data:
+                                current = float(data[c_field])
+                                break
+                        
+                        # Calculate power if we have both voltage and current
+                        if voltage is not None and current is not None:
+                            pv_power = voltage * current
+                            field_found = f"calculated from {v_field} and {c_field}"
+                            if self._pv_debug_counter % 100 == 1:
+                                logger.info(f"Calculated PV power: {voltage}V * {current}A = {pv_power}W")
+                        else:
+                            # Still no power data - just voltage data available
+                            if voltage is not None and self._pv_debug_counter % 200 == 1:
+                                logger.info(f"PV voltage available ({voltage}V) but no current/power data")
+                    
+                    if pv_power is None:
+                        self.data_errors['pv_power'] += 1
+                        if self.data_errors['pv_power'] % 200 == 1:
+                            available_fields = list(data.keys())
+                            logger.warning(f"PV power field not found (attempt #{self.data_errors['pv_power']}). Available: {available_fields}")
                         continue  # Skip if no PV power field found
                     
                     # Convert to integer watts
@@ -536,12 +670,16 @@ class VictronDataFetcher:
                     
                     # Basic validation (PV power should be 0 or positive, max reasonable ~50kW)
                     if pv_power < 0 or pv_power > 50000:
-                        print(f"Invalid PV power value: {pv_power}W")
+                        logger.warning(f"Invalid PV power value: {pv_power}W (expected 0-50kW)")
                         continue
                     
                     # Update stored values
                     self.last_pv_power = pv_power
                     self.last_pv_update_time = time.time()
+                    
+                    # Record successful read
+                    self.last_successful_read['pv_power'] = time.time()
+                    self.data_errors['pv_power'] = 0  # Reset error counter
                     
                     # Return parsed data
                     return {
@@ -753,28 +891,54 @@ class VictronDataFetcher:
         results['overall'] = results['battery'] or results['ac_power'] or results['pv_power']
         return results
     
+    def get_health_status(self):
+        """Get comprehensive health status for monitoring."""
+        return {
+            'connections': {
+                'battery': self.battery_connected,
+                'ac_power': self.ac_connected,
+                'pv_power': self.pv_connected
+            },
+            'last_reads': {
+                'battery': self.last_successful_read['battery'],
+                'ac_power': self.last_successful_read['ac_power'], 
+                'pv_power': self.last_successful_read['pv_power']
+            },
+            'error_counts': {
+                'connection_errors': self.connection_errors.copy(),
+                'data_errors': self.data_errors.copy()
+            },
+            'consecutive_failures': self.consecutive_failures
+        }
+
     def robust_battery_fetch(self, retries=3, delay=0.2):
-        for _ in range(retries):
-            success, soc, power, capacity_ah = self.battery_fetcher.fetch_data()
-            if success:
-                return True, soc, power, capacity_ah
-            time.sleep(delay)
+        """Robust battery fetch with retries."""
+        for attempt in range(retries):
+            data = self.read_battery_data()
+            if data:
+                return True, data['soc'], data['battery_power'], data['capacity_ah']
+            if attempt < retries - 1:  # Don't sleep on last attempt
+                time.sleep(delay)
         return False, 0, 0, 0
 
     def robust_ac_fetch(self, retries=3, delay=0.2):
-        for _ in range(retries):
-            success, ac_in_power, ac_house_power = self.ac_power_fetcher.fetch_power_data()
-            if success:
-                return True, ac_in_power, ac_house_power
-            time.sleep(delay)
+        """Robust AC power fetch with retries."""
+        for attempt in range(retries):
+            data = self.read_ac_power_data()
+            if data:
+                return True, data['grid_power'], data['house_power']
+            if attempt < retries - 1:  # Don't sleep on last attempt
+                time.sleep(delay)
         return False, 0, 0
 
     def robust_pv_fetch(self, retries=3, delay=0.2):
-        for _ in range(retries):
-            success, pv_power = self.pv_power_fetcher.fetch_pv_data()
-            if success:
-                return True, pv_power
-            time.sleep(delay)
+        """Robust PV power fetch with retries."""
+        for attempt in range(retries):
+            data = self.read_pv_power_data()
+            if data:
+                return True, data['pv_power']
+            if attempt < retries - 1:  # Don't sleep on last attempt
+                time.sleep(delay)
         return False, 0
 
 class WiFiConnection:
@@ -1262,89 +1426,11 @@ class VictronMatrixDisplay:
             history.pop(0)
         return sum(history) / len(history)
 
-def main():
-    """
-    Enhanced test/demo of the VictronDataFetcher and VictronMatrixDisplay classes.
-    """
-    logger.info("=== Victron Complete System Test ===")
-    display = VictronMatrixDisplay()
-    display.show_startup_message()
-    fetcher = VictronDataFetcher()
-    wifi = WiFiConnection(config_path='config.json')
-    logger.info("Connecting WiFi ...")
-    wifi.connect()
-    logger.info(f"WiFi connected: {wifi.is_connected()}")
-    test_results = fetcher.test_connection()
-    logger.info("\nConnection Test Results:")
-    logger.info(f"  Battery port: {'✓' if test_results['battery'] else '✗'}")
-    logger.info(f"  AC Power port: {'✓' if test_results['ac_power'] else '✗'}")
-    logger.info(f"  PV Power port: {'✓' if test_results['pv_power'] else '✗'}")
-    logger.info(f"  Overall: {'✓' if test_results['overall'] else '✗'}")
-    if not test_results['overall']:
-        logger.error("No connections available - check network and Cerbo GX")
-        display.graphics.set_pen(display._get_pen("red"))
-        display.graphics.clear()
-        display.graphics.text("NO CONNECTION", 2, 12, scale=1)
-        display.show()
-        return
-    logger.info("\nConnection test passed - starting data monitoring and display...")
-    try:
-        # Remove start_time and update_count if not needed elsewhere
-        update_count = 0
-        last_display_update = 0
-        while True:
-            data = fetcher.read_all_data()
-            reconnect_needed = False
-
-            # Check for missing/invalid data (N/A or None for critical fields)
-            if data:
-                critical_keys = ['soc', 'battery_power', 'grid_power', 'house_power', 'pv_power']
-                for key in critical_keys:
-                    val = data.get(key, "N/A")
-                    if val is None or val == "N/A":
-                        reconnect_needed = True
-                        logger.warning(f"Missing or invalid data for '{key}', will reconnect.")
-                        break
-                # Add freshness check
-                if not is_data_fresh(data):
-                    reconnect_needed = True
-                    logger.warning("Data is too old, will reconnect.")
-
-            if not data or reconnect_needed:
-                logger.warning("No data or N/A in critical field(s), reconnecting...")
-                fetcher.disconnect()
-                gc.collect()
-                time.sleep(0.2)
-                fetcher.connect()
-                gc.collect()
-                time.sleep(0.2)
-            else:
-                # Only update display if data is valid, not reconnecting, and fresh
-                update_count += 1
-                current_time = time.time()
-                if current_time - last_display_update >= 2.1:
-                    logger.debug("Showing combined power bars and SoC bar")
-                    display.draw_power_bars_with_soc(data)
-                    display.draw_power_summary(data)
-                    last_display_update = current_time
-
-            # Always disconnect and reconnect after each fetch
-            fetcher.disconnect()
-            time.sleep(0.1)
-            fetcher.connect()
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        logger.warning("\nTest interrupted by user")
-        display.graphics.set_pen(display._get_pen("yellow"))
-        display.graphics.clear()
-        display.graphics.text("STOPPED", 8, 12, scale=1)
-        display.show()
-    finally:
-        fetcher.disconnect()
-        logger.info("Test finished")
-
 def is_data_fresh(data, max_age=10):
-    # Check if all critical fields are present and not older than max_age seconds
+    """Check if all critical fields are present and not older than max_age seconds."""
+    if not data:
+        return False
+    
     now = time.time()
     if 'battery_age' in data and data['battery_age'] > max_age:
         return False
@@ -1353,6 +1439,127 @@ def is_data_fresh(data, max_age=10):
     if 'pv_age' in data and data['pv_age'] > max_age:
         return False
     return True
+
+def main():
+    """
+    Enhanced main function with improved stability and error handling.
+    """
+    logger.info("=== Victron Complete System Test - Enhanced Version ===")
+    display = VictronMatrixDisplay()
+    display.show_startup_message()
+    fetcher = VictronDataFetcher()
+    wifi = WiFiConnection(config_path='config.json')
+    
+    logger.info("Connecting WiFi ...")
+    try:
+        wifi.connect()
+        logger.info(f"WiFi connected: {wifi.is_connected()}")
+    except Exception as e:
+        logger.error(f"WiFi connection failed: {e}")
+        display.graphics.set_pen(display._get_pen("red"))
+        display.graphics.clear()
+        display.graphics.text("WIFI FAILED", 2, 12, scale=1)
+        display.show()
+        return
+    
+    # Test connections
+    test_results = fetcher.test_connection()
+    logger.info("\nConnection Test Results:")
+    logger.info(f"  Battery port: {'✓' if test_results['battery'] else '✗'}")
+    logger.info(f"  AC Power port: {'✓' if test_results['ac_power'] else '✗'}")
+    logger.info(f"  PV Power port: {'✓' if test_results['pv_power'] else '✗'}")
+    logger.info(f"  Overall: {'✓' if test_results['overall'] else '✗'}")
+    
+    if not test_results['overall']:
+        logger.error("No connections available - check network and Cerbo GX")
+        display.graphics.set_pen(display._get_pen("red"))
+        display.graphics.clear()
+        display.graphics.text("NO CONNECTION", 2, 12, scale=1)
+        display.show()
+        return
+    
+    logger.info("\nConnection test passed - starting data monitoring and display...")
+    
+    try:
+        update_count = 0
+        last_display_update = 0
+        last_health_log = time.time()
+        consecutive_no_data = 0
+        
+        while True:
+            data = fetcher.read_all_data()
+            reconnect_needed = False
+            current_time = time.time()
+
+            # Check for missing/invalid data
+            if data:
+                critical_keys = ['soc', 'battery_power', 'grid_power', 'house_power']
+                for key in critical_keys:
+                    val = data.get(key, "N/A")
+                    if val is None or val == "N/A":
+                        reconnect_needed = True
+                        logger.warning(f"Missing or invalid data for '{key}', will reconnect.")
+                        break
+                
+                # Add freshness check
+                if not is_data_fresh(data):
+                    reconnect_needed = True
+                    logger.warning("Data is too old, will reconnect.")
+
+            if not data or reconnect_needed:
+                consecutive_no_data += 1
+                if consecutive_no_data > 5:  # Log after several failures
+                    logger.warning(f"No valid data for {consecutive_no_data} cycles, reconnecting...")
+                    fetcher.disconnect()
+                    gc.collect()
+                    time.sleep(0.2)
+                    fetcher.connect()
+                    gc.collect()
+                    time.sleep(0.2)
+                    consecutive_no_data = 0  # Reset counter after reconnect attempt
+            else:
+                # Reset consecutive failure counter on successful data
+                if consecutive_no_data > 0:
+                    logger.info(f"Data resumed after {consecutive_no_data} failed cycles")
+                    consecutive_no_data = 0
+                
+                # Only update display if data is valid and not too frequent
+                update_count += 1
+                if current_time - last_display_update >= 2.1:
+                    logger.debug("Updating display with power bars and SoC")
+                    display.draw_power_bars_with_soc(data)
+                    display.draw_power_summary(data)
+                    last_display_update = current_time
+
+            # Log health status every 5 minutes
+            if current_time - last_health_log > 300:  # 5 minutes
+                health_status = fetcher.get_health_status()
+                logger.info(f"Health check - Connections: {health_status['connections']}, "
+                           f"Error counts: {health_status['error_counts']}")
+                last_health_log = current_time
+
+            # Always disconnect and reconnect after each fetch for stability
+            fetcher.disconnect()
+            time.sleep(0.1)
+            fetcher.connect()
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        logger.warning("\nTest interrupted by user")
+        display.graphics.set_pen(display._get_pen("yellow"))
+        display.graphics.clear()
+        display.graphics.text("STOPPED", 8, 12, scale=1)
+        display.show()
+    except Exception as e:
+        logger.critical(f"Unexpected error in main loop: {type(e).__name__}: {e}")
+        display.graphics.set_pen(display._get_pen("red"))
+        display.graphics.clear()
+        display.graphics.text("ERROR", 16, 8, scale=1)
+        display.graphics.text(str(e)[:10], 8, 16, scale=1)
+        display.show()
+    finally:
+        fetcher.disconnect()
+        logger.info("Test finished - all connections closed")
 
 if __name__ == "__main__":
     main()

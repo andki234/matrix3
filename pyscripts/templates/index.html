@@ -3,113 +3,242 @@
 <head>
   <meta charset="UTF-8">
   <title>LogiView LOGO8 Dashboard</title>
-  <!-- Socket.IO client -->
   <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --card: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --border: #1f2937;
+      --shadow: 0 10px 30px rgba(0,0,0,0.35);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: radial-gradient(circle at 20% 20%, rgba(56,189,248,0.05), transparent 30%),
+                  radial-gradient(circle at 80% 0%, rgba(34,197,94,0.06), transparent 25%),
+                  var(--bg);
+      color: var(--text);
+    }
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--panel);
+      padding: 16px 18px;
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+    }
+    h1 { margin: 0; font-size: 20px; letter-spacing: 0.4px; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .badge {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid rgba(255,255,255,0.08);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .badge.on { background: rgba(34,197,94,0.14); color: #bbf7d0; border-color: rgba(34,197,94,0.25); }
+    .badge.off { background: rgba(239,68,68,0.12); color: #fecdd3; border-color: rgba(239,68,68,0.25); }
+    .badge.mode { background: rgba(56,189,248,0.14); color: #cffafe; border-color: rgba(56,189,248,0.25); }
+    .meta { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240, 1fr)); gap: 12px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+    .panel h2 { margin: 0 0 8px 0; font-size: 15px; letter-spacing: 0.2px; color: #cbd5e1; }
+    .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+    .card strong { display: block; font-size: 13px; color: #cbd5e1; }
+    .temp { font-size: 20px; font-weight: 700; margin-top: 4px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .pumps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .pump-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); }
+    .pump-name { font-weight: 700; }
+    .state-pill { padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .state-on { background: rgba(34,197,94,0.18); color: #bbf7d0; }
+    .state-off { background: rgba(239,68,68,0.18); color: #fecdd3; }
+    .subtext { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .rule { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--card); position: relative; }
+    .rule.active { border-color: rgba(56,189,248,0.6); box-shadow: 0 0 0 1px rgba(56,189,248,0.35); }
+    .rule h3 { margin: 0 0 6px 0; font-size: 14px; color: #e5e7eb; }
+    .rule .desc { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; font-size: 12px; color: #cbd5e1; }
+    .kv span { color: var(--muted); }
+    @media (max-width: 640px) {
+      header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-  <h1>LogiView LOGO8 Dashboard</h1>
+  <div class="page">
+    <header>
+      <div>
+        <h1>LogiView LOGO8</h1>
+        <div class="meta">Realtime heating overview</div>
+        <div class="meta" id="timestamp">--</div>
+      </div>
+      <div class="badges">
+        <div class="badge" id="active-mode">Mode: --</div>
+        <div class="badge" id="boiler-status">Boiler: --</div>
+      </div>
+    </header>
 
-  <!-- Basic info -->
-  <div>
-    <strong>Timestamp:</strong>
-    <span id="timestamp"></span>
+    <div class="grid">
+      <section class="panel">
+        <h2>Temperatures</h2>
+        <div class="temps" id="temp-data"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Pumps</h2>
+        <div class="pumps" id="pump-data"></div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>Algorithms & Rules</h2>
+      <div class="rules" id="rules-container"></div>
+    </section>
   </div>
-  <div>
-    <strong>Boiler Status (BP):</strong>
-    <span id="boiler_status"></span>
-  </div>
-
-  <!-- Temperatures -->
-  <h2>Temperatures</h2>
-  <div id="temp-data"></div>
-
-  <!-- Pump Statuses -->
-  <h2>Pump Status</h2>
-  <div id="pump-data"></div>
-
-  <!-- Rules Overview -->
-  <h2>Rules</h2>
-  <div id="rules-container"></div>
 
   <script>
-    // Connect Socket.IO (defaults to same host/port)
     const socket = io();
 
-    // Listen for 'update' from Python
-    socket.on('update', function(data) {
-      console.log("Received update:", data);
+    const fmtTemp = val => (val === null || val === undefined) ? "N/A" : `${(val/100).toFixed(2)} °C`;
+    const fmtNum = val => (val === null || val === undefined) ? "-" : Number(val).toFixed(2);
 
-      // Timestamp
-      document.getElementById("timestamp").textContent = data.timestamp || "";
+    function setBadge(el, text, on) {
+      el.textContent = text;
+      el.className = `badge ${on === true ? 'on' : on === false ? 'off' : ''}${el.id === 'active-mode' ? ' mode' : ''}`;
+    }
 
-      // Boiler status
-      if (data.statuses && typeof data.statuses.BP === "boolean") {
-        document.getElementById("boiler_status").textContent =
-          data.statuses.BP ? "ON" : "OFF";
-      }
+    function renderTemperatures(temps) {
+      const container = document.getElementById("temp-data");
+      if (!temps) { container.innerHTML = ""; return; }
+      const keys = Object.keys(temps);
+      container.innerHTML = keys.map(k => {
+        const val = temps[k];
+        const display = fmtTemp(val);
+        const trend = val === null ? "" : `<div class="muted">raw: ${val}</div>`;
+        return `<div class="card"><strong>${k}</strong><div class="temp">${display}</div>${trend}</div>`;
+      }).join("");
+    }
 
-      // Temperatures
-      if (data.temperatures) {
-        let html = "<ul>";
-        for (let key in data.temperatures) {
-          if (data.temperatures[key] !== null) {
-            // Convert from hundredths to °C
-            const celsius = (data.temperatures[key] / 100).toFixed(2);
-            html += `<li>${key} = ${celsius} °C</li>`;
-          } else {
-            html += `<li>${key} = N/A</li>`;
-          }
-        }
-        html += "</ul>";
-        document.getElementById("temp-data").innerHTML = html;
-      }
+    function renderPumps(statuses, data) {
+      const container = document.getElementById("pump-data");
+      if (!statuses) { container.innerHTML = ""; return; }
+      const rows = [
+        { key: "BP", label: "Boiler Pump", plc: statuses.BP },
+        { key: "PT1T2", label: "Pump T1 → T2", plc: statuses.PT1T2, internal: data.pump_state_PT1T2, runtime: data.pump_runtime_PT1T2, offtime: data.pump_offtime_PT1T2 },
+        { key: "PT2T1", label: "Pump T2 → T1", plc: statuses.PT2T1, internal: data.pump_state_PT2T1, runtime: data.pump_runtime_PT2T1, offtime: data.pump_offtime_PT2T1 },
+        { key: "WDT", label: "Watchdog", plc: statuses.WDT }
+      ];
+      container.innerHTML = rows.map(r => {
+        const plcState = r.plc === true ? 'state-on' : 'state-off';
+        const plcText = r.plc === true ? 'ON' : 'OFF';
+        const internalState = (r.internal === undefined) ? '' : `<div class="subtext">Internal: ${r.internal ? 'ON' : 'OFF'} | run ${r.runtime ?? 0}s · off ${r.offtime ?? 0}s</div>`;
+        return `<div class="pump-row">
+          <div>
+            <div class="pump-name">${r.label}</div>
+            ${internalState}
+          </div>
+          <div class="state-pill ${plcState}">${plcText}</div>
+        </div>`;
+      }).join("");
+    }
 
-      // Pump statuses
-      if (data.statuses) {
-        const pumpKeys = ["BP", "PT1T2", "PT2T1", "WDT"];
-        let pumpHTML = "<ul>";
-        pumpKeys.forEach(key => {
-          if (key in data.statuses) {
-            pumpHTML += `<li>${key}: ${data.statuses[key] ? "ON" : "OFF"}</li>`;
-          }
-        });
-        pumpHTML += "</ul>";
-        document.getElementById("pump-data").innerHTML = pumpHTML;
-      }
+    function renderRules(rules) {
+      const container = document.getElementById("rules-container");
+      if (!rules) { container.innerHTML = ""; return; }
 
-      // Rules
-      if (data.rules) {
-        let ruleHTML = "<ol>";
-        data.rules.forEach(rule => {
-          const statusText = rule.is_active ? "<strong>ACTIVE</strong>" : "inactive";
+      const renderKv = (entries) => entries.map(([k,v]) => `<div><span>${k}</span><br>${typeof v === 'number' ? fmtNum(v) : v}</div>`).join("");
 
-          ruleHTML += `<li>
-            <strong>${rule.name}</strong><br />
-            Status: ${statusText}<br />
-            <em>${rule.description}</em>
+      container.innerHTML = rules.map(rule => {
+        const active = rule.is_active;
+        const values = rule.actual_values || {};
+
+        // Special presentation for Boiler OFF diagnostics
+        let body = "";
+        if ((rule.name || "").toLowerCase().includes("boiler off")) {
+          const temps = values.temps_raw || {};
+          const diagEntries = [
+            ["reason", values.reason],
+            ["start_ready", values.start_ready],
+            ["start_wait", values.start_wait],
+            ["gated_by_min_off", values.gated_by_min_off],
+            ["gated_by_min_on", values.gated_by_min_on],
+            ["plc_mismatch", values.plc_mismatch],
+            ["should_transfer", values.should_transfer],
+            ["status_PT2T1", values.status_PT2T1],
+            ["internal_PT2T1", values.internal_PT2T1],
+            ["PT2T1_runtime", values.PT2T1_runtime],
+            ["PT2T1_offtime", values.PT2T1_offtime],
+            ["ENERGY_DIFF_START", values.ENERGY_DIFF_START],
+            ["ENERGY_DIFF_STOP", values.ENERGY_DIFF_STOP],
+            ["diff", values.diff],
+            ["decision_reason", values.decision_reason],
+          ];
+          const tempEntries = Object.keys(temps).map(k => [k, temps[k]]);
+          body = `
+            <div class="kv">${renderKv(diagEntries)}</div>
+            <div class="kv" style="margin-top:6px;">${renderKv(tempEntries)}</div>
           `;
+        } else {
+          const kv = Object.keys(values).map(k => `<div><span>${k}</span><br>${typeof values[k] === 'number' ? fmtNum(values[k]) : values[k]}</div>`).join("");
+          body = `<div class="kv">${kv}</div>`;
+        }
 
-          // Observed values
-          if (rule.actual_values) {
-            ruleHTML += "<br/><strong>Observed Values:</strong><ul>";
-            for (let valKey in rule.actual_values) {
-              let val = rule.actual_values[valKey];
-              if (typeof val === "number") {
-                // If it's obviously an energy, temp, etc., show with 2 decimals
-                ruleHTML += `<li>${valKey}: ${val.toFixed(2)}</li>`;
-              } else {
-                // Could be string, null, etc.
-                ruleHTML += `<li>${valKey}: ${val}</li>`;
-              }
-            }
-            ruleHTML += "</ul>";
-          }
+        return `<div class="rule ${active ? 'active' : ''}">
+          <h3>${rule.name}</h3>
+          <div class="desc">${rule.description}</div>
+          <div class="badge ${active ? 'on' : 'off'}" style="margin-bottom:6px;">${active ? 'ACTIVE' : 'inactive'}</div>
+          ${body}
+        </div>`;
+      }).join("");
+    }
 
-          ruleHTML += "</li><br />";
-        });
-        ruleHTML += "</ol>";
-        document.getElementById("rules-container").innerHTML = ruleHTML;
+    function setActiveMode(rules) {
+      const el = document.getElementById("active-mode");
+      let mode = "Idle";
+      if (rules && rules.length >= 3) {
+        if (rules[0].is_active) mode = "Rule One (Emergency)";
+        else if (rules[1].is_active) mode = "Rule Two (Normal)";
+        else if (rules[2].is_active) mode = "Boiler OFF Transfer";
       }
+      setBadge(el, `Mode: ${mode}`, true);
+    }
+
+    socket.on('update', function(data) {
+      document.getElementById("timestamp").textContent = data.timestamp || "--";
+
+      if (data.statuses && typeof data.statuses.BP === "boolean") {
+        setBadge(document.getElementById("boiler-status"), `Boiler: ${data.statuses.BP ? 'ON' : 'OFF'}`, data.statuses.BP);
+      }
+
+      renderTemperatures(data.temperatures);
+      renderPumps(data.statuses, data);
+      renderRules(data.rules);
+      setActiveMode(data.rules);
     });
   </script>
 </body>

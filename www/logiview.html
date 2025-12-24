@@ -20,6 +20,16 @@
         <input type="date" id="endDate" name="endDate">
 
         <button type="button" onclick="fetchAndPlotData()">Update Plot</button>
+        
+        <!-- Quick date range buttons -->
+        <div style="margin-top: 10px;">
+            <button type="button" onclick="setDateRange(1)">Last 24 Hours</button>
+            <button type="button" onclick="setDateRange(3)">Last 3 Days</button>
+            <button type="button" onclick="setDateRange(7)">Last Week</button>
+            <button type="button" onclick="setDateRange(14)">Last 2 Weeks</button>
+            <button type="button" onclick="setDateRange(30)">Last Month</button>
+            <button type="button" onclick="setDateRange(90)">Last 3 Months</button>
+        </div>
     </form>
 
     <!-- Custom controls to show/hide series -->
@@ -45,18 +55,75 @@
     </div>
 
     <!-- Div for CanvasJS plot -->
-    <div id="dataChart" style="height: 1000px; width: 100%;"></div>
+    <div id="loadingIndicator" style="display: none; text-align: center; padding: 20px; font-size: 18px; color: #666;">
+        Loading data, please wait...
+        <div style="margin-top: 10px;">
+            <div style="display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 2s linear infinite;"></div>
+        </div>
+    </div>
+    
+    <div id="dataInfo" style="padding: 10px; background-color: #f0f0f0; margin: 10px 0; border-radius: 5px; display: none;">
+        <strong>Data Info:</strong> <span id="dataPointCount"></span> data points loaded
+        <span id="samplingInfo"></span>
+    </div>
+    
+    <div id="dataChart"></div>
+
+    <style>
+        /* Remove default margins and padding to use full browser width */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 0;
+            padding: 10px;
+            font-family: Arial, sans-serif;
+        }
+        
+        #dateForm {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        
+        #controls {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        
+        #dataChart {
+            width: calc(100vw - 20px) !important;
+            height: 1000px;
+            margin: 0;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 
     <script>
         function setDefaultDates() {
             const endDateInput = document.getElementById('endDate');
             const startDateInput = document.getElementById('startDate');
 
-            const today = new Date();
-            endDateInput.value = today.toISOString().slice(0, 10);
+            // Only set default dates if the fields are empty
+            if (!endDateInput.value) {
+                const today = new Date();
+                endDateInput.value = today.toISOString().slice(0, 10);
+            }
 
-            const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-            startDateInput.value = weekAgo.toISOString().slice(0, 10);
+            if (!startDateInput.value) {
+                const weekAgo = new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000);
+                startDateInput.value = weekAgo.toISOString().slice(0, 10);
+            }
         }
 
         function setAllCheckboxes() {
@@ -69,7 +136,26 @@
             checkboxes.forEach(checkbox => checkbox.checked = false);
         }
 
+        function setDateRange(days) {
+            const endDateInput = document.getElementById('endDate');
+            const startDateInput = document.getElementById('startDate');
+
+            const today = new Date();
+            endDateInput.value = today.toISOString().slice(0, 10);
+
+            const pastDate = new Date(today.getTime() - days * 24 * 60 * 60 * 1000);
+            startDateInput.value = pastDate.toISOString().slice(0, 10);
+
+            // Automatically fetch and plot data after setting the date range
+            fetchAndPlotData();
+        }
+
         function fetchAndPlotData() {
+            // Debug: Log the current date values
+            const startDateStr = document.getElementById('startDate').value;
+            const endDateStr = document.getElementById('endDate').value;
+            console.log("Fetching data for date range:", startDateStr, "to", endDateStr);
+
             // Get the checkbox elements
             const t1topCheckbox = document.getElementById('toggleT1TOP');
             const t1midCheckbox = document.getElementById('toggleT1MID');
@@ -80,19 +166,15 @@
             const t3topCheckbox = document.getElementById('toggleT3TOP');
             const t3midCheckbox = document.getElementById('toggleT3MID');
             const t3botCheckbox = document.getElementById('toggleT3BOT');
-            const tbtopCheckbox = document.getElementById('toggleTB');
+            const tbCheckbox = document.getElementById('toggleTB');
             const tretCheckbox  = document.getElementById('toggleTRET');
             const bpCheckbox    = document.getElementById('toggleBP');
             const toutCheckbox  = document.getElementById('toggleTOUT');
             const pt1t2Checkbox = document.getElementById('togglePT1T2');
             const pt2t1Checkbox = document.getElementById('togglePT2T1');
 
-            // ... add more for other series
-
-            const startDateStr = document.getElementById('startDate').value;
-
             // Convert endDate string to Date object
-            let endDateObj = new Date(document.getElementById('endDate').value);
+            let endDateObj = new Date(endDateStr);
 
             // Adjust the end date to be the end of the day
             endDateObj.setHours(23, 59, 59, 999);
@@ -105,24 +187,65 @@
                 endDateObj.getMinutes().toString().padStart(2, '0') + ':' +
                 endDateObj.getSeconds().toString().padStart(2, '0');
 
-            const apiUrl = `logiviewdb.php?startDate=${startDateStr}&endDate=${adjustedEndDate}`;
+            // Show loading indicator and hide stale data info
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            const chartDiv = document.getElementById('dataChart');
+            const dataInfo = document.getElementById('dataInfo');
+            loadingIndicator.style.display = 'block';
+            chartDiv.style.display = 'none';
+            dataInfo.style.display = 'none';
 
-            // Log the API call to the console
-            console.log("API call:", apiUrl);
-
-
-            fetch(apiUrl)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! Status: ${response.status}`);
-                    }
-                    return response.json();
+            // Fetch data directly from PHP endpoint with smart SQL aggregation
+            const dataUrl = `logiview_data.php?startDate=${startDateStr}&endDate=${adjustedEndDate}`;
+            console.log(`Fetching data from PHP endpoint:`, dataUrl);
+            fetch(dataUrl)
+                .then(resp => {
+                    if (!resp.ok) throw new Error(`HTTP error! Status: ${resp.status}`);
+                    return resp.json();
                 })
-                .then(data => {
-                    if (!Array.isArray(data) || !data.length) {
-                        console.error("Data received is not a valid array or is empty.");
+                .then(responseData => {
+                    if (responseData && responseData.data) {
+                        console.log(`Received ${responseData.data.length} points`);
+                    }
+                    return responseData;
+                })
+                .then(responseData => {
+                    // Handle the data response
+                    let data, metadata = null;
+                    if (responseData && responseData.error) {
+                        console.error("Server error:", responseData.error);
+                        alert("Error loading data: " + responseData.error);
                         return;
                     }
+                    if (responseData && responseData.data && Array.isArray(responseData.data)) {
+                        data = responseData.data;
+                        metadata = responseData.metadata;
+                    } else {
+                        console.error("Data received is not a valid format:", responseData);
+                        return;
+                    }
+                    if (!data.length) {
+                        console.error("No data points returned.");
+                        alert("No data found for the selected date range.");
+                        return;
+                    }
+                    // Debug: Show actual date range of returned data
+                    const firstDataPoint = data[0].ts;
+                    const lastDataPoint = data[data.length - 1].ts;
+                    console.log(`Step 3 Complete: Received ${data.length} data points from ${firstDataPoint} to ${lastDataPoint}`);
+                    // Update data info display
+                    const dataPointCount = document.getElementById('dataPointCount');
+                    const samplingInfo = document.getElementById('samplingInfo');
+                    dataPointCount.textContent = data.length;
+                    let samplingText = "";
+                    if (metadata && metadata.aggregationType) {
+                        samplingText = ` (${metadata.aggregationType} averages, ~${metadata.targetPoints} target points, ${metadata.intervalSeconds}s buckets)`;
+                        console.log("Smart SQL aggregation result:", metadata);
+                    } else {
+                        samplingText = " (smart SQL aggregation)";
+                    }
+                    samplingInfo.textContent = samplingText;
+                    dataInfo.style.display = 'block';
                     // Define the data fields to plot
                     const dataFields = ['t1top', 't1mid', 't1bot', 't2top', 't2mid', 't2bot', 't3top', 't3mid', 't3bot', 'tbtop', 'tret', 'bp', 'tout', 'pt1t2', 'pt2t1'];
                     const chartData = dataFields.map(field => {
@@ -136,23 +259,23 @@
                             (field === 't3top' && t3topCheckbox.checked) ||
                             (field === 't3mid' && t3midCheckbox.checked) ||
                             (field === 't3bot' && t3botCheckbox.checked) ||
-                            (field === 'tbtop' && tbtopCheckbox.checked) ||
+                            (field === 'tbtop' && tbCheckbox.checked) ||
                             (field === 'tret' && tretCheckbox.checked) ||
                             (field === 'bp' && bpCheckbox.checked) ||
                             (field === 'tout' && toutCheckbox.checked) ||
                             (field === 'pt1t2' && pt1t2Checkbox.checked) ||
                             (field === 'pt2t1' && pt2t1Checkbox.checked)) {
-                            // ... add more for other series
                             return {
                                 type: "line",
                                 name: field.toUpperCase(),
                                 showInLegend: true,
                                 dataPoints: data.map(item => ({ x: new Date(item.ts), y: item[field] }))
-                            }
+                            };
                         }
-                    }).filter(Boolean);  // Filter out any undefined values
+                        return null;
+                    }).filter(series => series !== null);
 
-                    // Define the weights
+                    // Define the weights for weighted average
                     const weights = {
                         't1bot': 0.2,
                         't2bot': 1,
@@ -182,25 +305,29 @@
                         type: "line",
                         name: "AVERAGE",
                         showInLegend: true,
-                        color: "red",          // Setting the color of the line to red
-                        lineThickness: 6,      // Making the line thicker
+                        color: "red",
+                        lineThickness: 6,
                         dataPoints: averageDataPoints
                     });
 
                     const chart = new CanvasJS.Chart("dataChart", {
                         title: {
-                            text: "Data Plotter"
+                            text: "Data Plotter",
+                            fontSize: 14
+                        },
+                        legend: {
+                            fontSize: 11
                         },
                         axisX: {
                             title: "Date",
                             valueFormatString: "HH:MM YYYY-MM-DD",
-                            labelFontSize: 12,
-                            titleFontSize: 24
+                            labelFontSize: 10,
+                            titleFontSize: 12
                         },
                         axisY: {
                             title: "Temperature [DegC]",
-                            labelFontSize: 12,
-                            titleFontSize: 20
+                            labelFontSize: 10,
+                            titleFontSize: 12
                         },
                         toolTip: {
                             contentFormatter: function (e) {
@@ -213,15 +340,24 @@
                         },
                         zoomEnabled: true,
                         panEnabled: true,
+                        width: window.innerWidth - 20,
                         height: 1000,
                         animationEnabled: true,
                         data: chartData
                     });
 
                     chart.render();
+
+                    // Hide loading indicator and show chart
+                    loadingIndicator.style.display = 'none';
+                    chartDiv.style.display = 'block';
                 })
                 .catch(error => {
-                    console.error('There was an error fetching the data:', error);
+                    console.error('There was an error with frontend calculation:', error);
+                    // Hide loading indicator on error
+                    loadingIndicator.style.display = 'none';
+                    chartDiv.style.display = 'block';
+                    alert('Error loading data: ' + error.message);
                 });
         }
 
@@ -229,11 +365,24 @@
         window.onload = function () {
             setDefaultDates();
             fetchAndPlotData();
+            
+            // Update plot when a checkbox is clicked
+            document.querySelectorAll('#controls input[type="checkbox"]').forEach(function(checkbox) {
+                checkbox.addEventListener('change', fetchAndPlotData);
+            });
+
+            // Update plot when date inputs are changed
+            document.getElementById('startDate').addEventListener('change', fetchAndPlotData);
+            document.getElementById('endDate').addEventListener('change', fetchAndPlotData);
         }
 
-         // Update plot when a checkbox is clicked
-         document.querySelectorAll('#controls input[type="checkbox"]').forEach(function(checkbox) {
-            checkbox.addEventListener('change', fetchAndPlotData);
+        // Handle window resize to make chart responsive
+        window.addEventListener('resize', function() {
+            // Simple debounced resize - just update chart width
+            clearTimeout(window.resizeTimeout);
+            window.resizeTimeout = setTimeout(function() {
+                fetchAndPlotData();
+            }, 500);
         });
     </script>
 
