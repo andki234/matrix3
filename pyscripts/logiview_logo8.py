@@ -5,20 +5,24 @@ logiview_logo8.py
 Purpose
 - Control LOGO8-based heating: reads temps from MySQL, drives PLC pumps, and serves a Socket.IO dashboard via Flask/eventlet.
 
-Your confirmed PLC mapping (applied here)
-- PT2T1 (PT2 -> PT1) command output is V0.0  (VM byte V0, bit 0)
-- Pump is ACTIVE-HIGH: ON=1, OFF=0
-- PT2T1 feedback/status is V1.1 (VM byte V1, bit 1) where 1=running, 0=stopped
-- Watchdog (WDT) status is V1.3 (VM byte V1, bit 3)
+Confirmed PLC mapping
+- PT2T1 (PT2 -> PT1) command output: V0.0 (VM byte V0, bit 0) ACTIVE-HIGH (ON=1, OFF=0)
+- PT1T2 (T1 -> T2) command output: V0.1 (VM byte V0, bit 1) ACTIVE-HIGH (ON=1, OFF=0)
+- PT2T1 feedback/status: V1.1 (VM byte V1, bit 1) where 1=running, 0=stopped
+- Watchdog status: V1.3 (VM byte V1, bit 3)
+
+Watchdog reset output
+- Reset output: V0.2 (VM byte V0, bit 2)
+- Requirements:
+  - MUST be 0 when program starts
+  - If watchdog indicates "not cleared" (WDT==1), hold V0.2 HIGH until WDT clears, then set V0.2 back to 0
+  - V0.2 must NOT be used by any pump output
+
+Startup safety
+- ALL pump outputs must be OFF when program starts.
 
 Test mode
 - --test_pump runs a one-shot PT2T1 ON/OFF test and exits WITHOUT DB/Flask startup.
-- Test mode prints explicit DEBUG messages, including raw V0/V1 bytes and the feedback bit.
-- In test mode, watchdog V1.3 is also read and printed.
-
-Important addressing convention
-- We treat V0/V1 as BYTES ("V0", "V1") and use bit_position for bit selection.
-  Do NOT use "V0.0" / "V0.1" as separate "addresses" in snap7-logo calls.
 """
 
 import argparse
@@ -30,6 +34,7 @@ import os
 import socket
 import sys
 import traceback
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -61,7 +66,7 @@ except ImportError:
 
 @dataclass(frozen=True)
 class Config:
-    LOGGING_LEVEL: int = logging.DEBUG
+    LOGGING_LEVEL: int = logging.WARNING
     USE_PUSHBULLET: bool = True
     # Default value; runtime can override via global FORCE_PLC_WRITE.
     FORCE_PLC_WRITE: bool = False
@@ -76,8 +81,8 @@ class Config:
 
     PUMP_ON_DELAY: int = 5
     PUMP_OFF_DELAY: int = 5
-    PUMP_MIN_ON_TIME: int = 10
-    PUMP_MIN_OFF_TIME: int = 5
+    PUMP_MIN_ON_TIME: int = 100
+    PUMP_MIN_OFF_TIME: int = 100
     # Number of cycles to hold 'start grace' after commanding ON (ignore PLC mismatch)
     PUMP_START_GRACE: int = 10
 
@@ -100,6 +105,36 @@ CFG = Config()
 
 # Runtime override (mutable). Do NOT mutate frozen CFG.
 FORCE_PLC_WRITE: bool = CFG.FORCE_PLC_WRITE
+
+
+# --- PLC mapping constants --------------------------------------------------------
+
+# PT2T1 output (PT2 -> PT1) command output: V0.0
+PT2T1_OUT_BYTE, PT2T1_OUT_BIT = "V0", 0
+
+# PT1T2 output (T1 -> T2) command output: V0.1
+PT1T2_OUT_BYTE, PT1T2_OUT_BIT = "V0", 1
+
+# Status/feedback bits on V1 byte
+BP_FB_BYTE, BP_FB_BIT         = "V1", 0
+PT2T1_FB_BYTE, PT2T1_FB_BIT   = "V1", 1
+PT1T2_FB_BYTE, PT1T2_FB_BIT   = "V1", 2
+
+# Watchdog status and reset output
+WDT_STATUS_BYTE, WDT_STATUS_BIT = "V1", 3
+WDT_RESET_BYTE,  WDT_RESET_BIT  = "V0", 2
+
+
+# --- Runtime watchdog supervisor tuning -------------------------------------------
+
+# Require N consecutive "WDT=1" reads before attempting reset
+WDT_CONSECUTIVE_TRIP = 3
+
+# Cooldown to prevent repeated resets too often (seconds)
+WDT_RESET_COOLDOWN_S = 60.0
+
+# How long we hold/reset-wait for WDT to clear per attempt (seconds)
+WDT_RESET_TIMEOUT_S = 15.0
 
 
 # --- Data models ------------------------------------------------------------------
@@ -152,7 +187,6 @@ class LoggerClass:
         logger.setLevel(logging_level)
         logger.propagate = False
 
-        # Prevent duplicate handlers if script restarts in-process.
         if logger.handlers:
             logger.handlers.clear()
 
@@ -193,7 +227,6 @@ class LoggerClass:
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
 
-        # Capture stderr so argparse errors can be read.
         captured_output = io.StringIO()
         self.original_stderr = sys.stderr
         self.captured_stderr = captured_output
@@ -259,6 +292,10 @@ def exit_program(
     sys.exit(exit_code)
 
 
+def _bits_set(byte_val: int) -> str:
+    return ",".join(str(i) for i in range(8) if (byte_val >> i) & 1) or "(none)"
+
+
 # --- PLC layer --------------------------------------------------------------------
 
 class LogoPlcHandler:
@@ -302,9 +339,6 @@ class LogoPlcHandler:
         return bit
 
     def write_bit(self, vm_byte_address: str, bit_position: int, value: bool) -> None:
-        """
-        Read-modify-write a bit inside one VM byte. Prevents stomping other bits in that same byte.
-        """
         try:
             orig_byte = self.read_byte(vm_byte_address)
             new_byte = orig_byte
@@ -351,6 +385,90 @@ class LogoPlcHandler:
             self.logger.error(f"PLC disconnect error: {e}")
 
 
+# --- Startup safety + watchdog reset ----------------------------------------------
+
+def enforce_startup_outputs_off(plc: LogoPlcHandler, logger: logging.Logger) -> None:
+    logger.info("Startup: forcing watchdog reset output and all pump outputs OFF.")
+    try:
+        plc.write_bit(WDT_RESET_BYTE, WDT_RESET_BIT, False)
+    except Exception as e:
+        logger.error(f"Startup: failed to force WDT reset OFF ({WDT_RESET_BYTE}.{WDT_RESET_BIT}): {e}")
+
+    try:
+        plc.write_bit(PT2T1_OUT_BYTE, PT2T1_OUT_BIT, False)
+    except Exception as e:
+        logger.error(f"Startup: failed to force PT2T1 OFF ({PT2T1_OUT_BYTE}.{PT2T1_OUT_BIT}): {e}")
+
+    try:
+        plc.write_bit(PT1T2_OUT_BYTE, PT1T2_OUT_BIT, False)
+    except Exception as e:
+        logger.error(f"Startup: failed to force PT1T2 OFF ({PT1T2_OUT_BYTE}.{PT1T2_OUT_BIT}): {e}")
+
+    eventlet.sleep(0.20)
+
+
+def reset_watchdog_if_needed(plc: LogoPlcHandler, logger: logging.Logger, timeout_s: float = 15.0) -> bool:
+    """
+    Hold V0.2 HIGH until watchdog is cleared (V1.3==0), then set V0.2 back to 0.
+    Returns True if watchdog cleared during this function, else False.
+    """
+    # Must be 0 before doing anything
+    try:
+        plc.write_bit(WDT_RESET_BYTE, WDT_RESET_BIT, False)
+    except Exception as e:
+        logger.error(f"WDT reset: could not force reset bit LOW at start: {e}")
+
+    eventlet.sleep(0.10)
+
+    try:
+        wdt = plc.read_bit(WDT_STATUS_BYTE, WDT_STATUS_BIT)
+    except Exception as e:
+        logger.error(f"WDT reset: failed to read WDT status ({WDT_STATUS_BYTE}.{WDT_STATUS_BIT}): {e}")
+        return False
+
+    if not wdt:
+        logger.info("Watchdog already cleared (V1.3=0). Leaving V0.2=0.")
+        return True
+
+    logger.warning("Watchdog NOT cleared (V1.3=1). Holding V0.2 HIGH until cleared...")
+    start = time.monotonic()
+
+    try:
+        plc.write_bit(WDT_RESET_BYTE, WDT_RESET_BIT, True)
+    except Exception as e:
+        logger.error(f"WDT reset: failed to set V0.2 HIGH: {e}")
+        return False
+
+    cleared = False
+    while True:
+        eventlet.sleep(0.20)
+        try:
+            wdt_now = plc.read_bit(WDT_STATUS_BYTE, WDT_STATUS_BIT)
+        except Exception as e:
+            logger.error(f"WDT reset: read error while waiting for clear: {e}")
+            wdt_now = True
+
+        if not wdt_now:
+            cleared = True
+            break
+
+        if (time.monotonic() - start) >= timeout_s:
+            break
+
+    # Always return V0.2 to 0
+    try:
+        plc.write_bit(WDT_RESET_BYTE, WDT_RESET_BIT, False)
+    except Exception as e:
+        logger.error(f"WDT reset: failed to set V0.2 LOW after wait: {e}")
+
+    if cleared:
+        logger.info("Watchdog cleared (V1.3=0). V0.2 returned to 0.")
+    else:
+        logger.error(f"Watchdog did not clear within {timeout_s:.1f}s. V0.2 returned to 0 anyway.")
+
+    return cleared
+
+
 # --- DB access --------------------------------------------------------------------
 
 def get_temperature_value(
@@ -388,12 +506,12 @@ class PumpController:
         logger: logging.Logger
     ):
         self.name = name
-        self.vm_address = vm_byte_address  # BYTE address only: "V0", "V1", etc.
+        self.vm_address = vm_byte_address
         self.bit_position = bit_position
         self.plc = plc
         self.logger = logger
         self.counters = PumpCounters()
-        self.invert_write = False  # ACTIVE-HIGH by default
+        self.invert_write = False  # ACTIVE-HIGH by default (For debugging/inversion)
 
     @property
     def state(self) -> bool:
@@ -691,12 +809,10 @@ class Algorithm:
         self.plc_handler = plc_handler
         self.logger = logger
 
-        # CONFIRMED: PT2T1 command is V0.0 and ACTIVE-HIGH (ON=1, OFF=0)
-        self.pump_PT2T1 = PumpController("PT2T1", "V0", 0, plc_handler, logger)
-        self.pump_PT2T1.invert_write = False  # Active-high
+        self.pump_PT2T1 = PumpController("PT2T1", PT2T1_OUT_BYTE, PT2T1_OUT_BIT, plc_handler, logger)
+        self.pump_PT2T1.invert_write = False
 
-        # PT1T2 mapping is UNKNOWN here; keep it on a different bit to avoid overlap if you later confirm.
-        self.pump_PT1T2 = PumpController("PT1T2", "V0", 2, plc_handler, logger)
+        self.pump_PT1T2 = PumpController("PT1T2", PT1T2_OUT_BYTE, PT1T2_OUT_BIT, plc_handler, logger)
         self.pump_PT1T2.invert_write = False
 
         self.rule_engine = RuleEngine(logger)
@@ -718,13 +834,37 @@ class Algorithm:
         self.pump_PT2T1.reconcile_with_plc(status.PT2T1, ignore_mismatch=ignore_pt2t1)
         self.initial_sync_done = True
 
+    # --- Mutual exclusivity enforcement -------------------------------------
+    def _enforce_mutual_exclusivity(self, boiler_on_mode: bool) -> None:
+        """
+        Hard interlock: PT2T1 and PT1T2 must never be ON at the same time.
+        Priority depends on mode:
+          - Boiler ON mode (BP=True): PT1T2 has priority -> force PT2T1 OFF
+          - Boiler OFF mode (BP=False): PT2T1 has priority -> force PT1T2 OFF
+        """
+        if self.pump_PT1T2.state and self.pump_PT2T1.state:
+            if boiler_on_mode:
+                self.logger.critical("INTERLOCK: Both pumps ON detected. Boiler-ON mode => forcing PT2T1 OFF.")
+                self.pump_PT2T1.set_state(False, CFG.PUMP_MIN_ON_TIME)
+            else:
+                self.logger.critical("INTERLOCK: Both pumps ON detected. Boiler-OFF mode => forcing PT1T2 OFF.")
+                self.pump_PT1T2.set_state(False, CFG.PUMP_MIN_ON_TIME)
+
     def _run_boiler_on_mode(self, temp: TemperatureReadings, status: PumpStatus) -> None:
+        # NEW: In Boiler-ON mode we do not want PT2T1 running at all.
+        # If it is left ON from prior Boiler-OFF activity, force it OFF immediately.
+        if self.pump_PT2T1.state:
+            self.logger.info("Boiler-ON mode: forcing PT2T1 OFF (transfer pump not allowed while boiler ON).")
+            self.pump_PT2T1.set_state(False, CFG.PUMP_MIN_ON_TIME)
+
         self.pump_PT2T1.tick_counters()
         self.boiler_off_active = False
+
         self.rule_engine.rule_one(temp, status, self.pump_PT1T2)
         if not self.rule_engine.rule_one_active:
             self.rule_engine.rule_two(temp, status, self.pump_PT1T2)
 
+        # Existing safeguard retained (but now should never trigger due to above).
         if self.pump_PT1T2.state and self.pump_PT2T1.state:
             self.logger.info("Mutual exclusivity: PT1T2 is ON -> forcing PT2T1 OFF")
             self.pump_PT2T1.set_state(False, CFG.PUMP_MIN_ON_TIME)
@@ -734,10 +874,19 @@ class Algorithm:
         self.rule_engine.rule_two_active = False
         self.logger.info("Mode switch: entering Boiler-OFF mode; cleared Rule One/Two flags.")
         self.boiler_off_active = True
+
+        # Existing logic: PT1T2 must be OFF in Boiler-OFF transfer mode.
         if self.pump_PT1T2.state:
+            self.logger.info("Boiler-OFF mode: forcing PT1T2 OFF before running PT2T1 transfer.")
             self.pump_PT1T2.set_state(False, CFG.PUMP_MIN_ON_TIME)
+
         diag = self.boiler_off.run(temp, status)
         self.rules[2]["actual_values"] = diag
+
+        # NEW: Post-condition check (in case future logic changes or PLC mismatch occurs)
+        if self.pump_PT1T2.state and self.pump_PT2T1.state:
+            self.logger.critical("Boiler-OFF mode post-run: both pumps ON => forcing PT1T2 OFF.")
+            self.pump_PT1T2.set_state(False, CFG.PUMP_MIN_ON_TIME)
 
     def _build_state(self, temp: TemperatureReadings, status: PumpStatus) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -766,10 +915,15 @@ class Algorithm:
         self.logger.debug(">>> Executing Algorithm.")
         self.synchronize(status)
 
-        if status.BP:
+        boiler_on_mode = bool(status.BP)
+
+        if boiler_on_mode:
             self._run_boiler_on_mode(temp, status)
         else:
             self._run_boiler_off_mode(temp, status)
+
+        # NEW: final hard interlock, every loop (last line of defense)
+        self._enforce_mutual_exclusivity(boiler_on_mode=boiler_on_mode)
 
         self._build_state(temp, status)
         socketio_obj.emit("update", self.state)
@@ -845,88 +999,68 @@ class Parser:
             exit_program(self.logger, None, 1, f"Arg parsing error: {err_msg}")
 
 
-def _bits_set(byte_val: int) -> str:
-    return ",".join(str(i) for i in range(8) if (byte_val >> i) & 1) or "(none)"
-
-
 def run_test_pump(logger: logging.Logger, plc_ip: str) -> None:
     logger.setLevel(logging.DEBUG)
 
-    OUT_BYTE, OUT_BIT = "V0", 0
-    FB_BYTE, FB_BIT = "V1", 1
-    WDT_BYTE, WDT_BIT = "V1", 3
-
     logger.debug("====================================================")
     logger.debug("TEST MODE: --test_pump (PT2T1)")
-    logger.debug("Confirmed mapping:")
-    logger.debug(f"  Command: {OUT_BYTE}.{OUT_BIT} (ON=1, OFF=0)")
-    logger.debug(f"  Feedback: {FB_BYTE}.{FB_BIT} (1=running, 0=stopped)")
-    logger.debug(f"  Watchdog: {WDT_BYTE}.{WDT_BIT}")
+    logger.debug(f"  PT2T1 Command: {PT2T1_OUT_BYTE}.{PT2T1_OUT_BIT} (ON=1, OFF=0)")
+    logger.debug(f"  PT2T1 Feedback: {PT2T1_FB_BYTE}.{PT2T1_FB_BIT} (1=running, 0=stopped)")
+    logger.debug(f"  Watchdog Status: {WDT_STATUS_BYTE}.{WDT_STATUS_BIT}")
+    logger.debug(f"  Watchdog Reset Output: {WDT_RESET_BYTE}.{WDT_RESET_BIT}")
     logger.debug(f"PLC IP: {plc_ip}")
     logger.debug(f"FORCE_PLC_WRITE={FORCE_PLC_WRITE}")
     logger.debug("====================================================")
 
     plc_handler = LogoPlcHandler(logger, plc_ip)
+    enforce_startup_outputs_off(plc_handler, logger)
+
     algorithm = Algorithm(plc_handler, logger)
 
-    algorithm.pump_PT2T1.invert_write = False
-    algorithm.pump_PT2T1.vm_address = OUT_BYTE
-    algorithm.pump_PT2T1.bit_position = OUT_BIT
-
     try:
-        v0_before = plc_handler.read_byte(OUT_BYTE)
-        v1_before = plc_handler.read_byte(FB_BYTE)
-        fb_before = bool((v1_before >> FB_BIT) & 1)
-        wdt_before = bool((v1_before >> WDT_BIT) & 1)
+        v0_before = plc_handler.read_byte("V0")
+        v1_before = plc_handler.read_byte("V1")
 
-        logger.debug(f"[BASELINE] {OUT_BYTE}=0x{v0_before:02x} bits_set={_bits_set(v0_before)}")
+        fb_before = bool((v1_before >> PT2T1_FB_BIT) & 1)
+        wdt_before = bool((v1_before >> WDT_STATUS_BIT) & 1)
+
+        logger.debug(f"[BASELINE] V0=0x{v0_before:02x} bits_set={_bits_set(v0_before)}")
         logger.debug(
-            f"[BASELINE] {FB_BYTE}=0x{v1_before:02x} bits_set={_bits_set(v1_before)}  | "
-            f"{FB_BYTE}.{FB_BIT}={fb_before}  {WDT_BYTE}.{WDT_BIT}={wdt_before}"
+            f"[BASELINE] V1=0x{v1_before:02x} bits_set={_bits_set(v1_before)}  | "
+            f"V1.{PT2T1_FB_BIT}={fb_before}  V1.{WDT_STATUS_BIT}={wdt_before}"
         )
 
-        eventlet.sleep(3)
+        eventlet.sleep(1.0)
 
         logger.debug("Commanding PT2T1 ON ... (write 1)")
         algorithm.pump_PT2T1.set_state(True, CFG.PUMP_MIN_ON_TIME)
-        eventlet.sleep(3)
+        eventlet.sleep(1.0)
 
-        v0_on = plc_handler.read_byte(OUT_BYTE)
-        v1_on = plc_handler.read_byte(FB_BYTE)
-        fb_on = bool((v1_on >> FB_BIT) & 1)
-        wdt_on = bool((v1_on >> WDT_BIT) & 1)
+        v0_on = plc_handler.read_byte("V0")
+        v1_on = plc_handler.read_byte("V1")
+        fb_on = bool((v1_on >> PT2T1_FB_BIT) & 1)
 
-        logger.debug(f"[AFTER ON] {OUT_BYTE}=0x{v0_on:02x} bits_set={_bits_set(v0_on)}")
-        logger.debug(
-            f"[AFTER ON] {FB_BYTE}=0x{v1_on:02x} bits_set={_bits_set(v1_on)}  | "
-            f"{FB_BYTE}.{FB_BIT}={fb_on}  {WDT_BYTE}.{WDT_BIT}={wdt_on}"
-        )
+        logger.debug(f"[AFTER ON] V0=0x{v0_on:02x} bits_set={_bits_set(v0_on)}")
+        logger.debug(f"[AFTER ON] V1=0x{v1_on:02x} bits_set={_bits_set(v1_on)}  | V1.{PT2T1_FB_BIT}={fb_on}")
 
-        eventlet.sleep(3)
+        eventlet.sleep(1.0)
 
         logger.debug("Commanding PT2T1 OFF ... (write 0)")
         algorithm.pump_PT2T1.set_state(False, CFG.PUMP_MIN_ON_TIME)
-        eventlet.sleep(3)
+        eventlet.sleep(1.0)
 
-        v0_off = plc_handler.read_byte(OUT_BYTE)
-        v1_off = plc_handler.read_byte(FB_BYTE)
-        fb_off = bool((v1_off >> FB_BIT) & 1)
-        wdt_off = bool((v1_off >> WDT_BIT) & 1)
+        v0_off = plc_handler.read_byte("V0")
+        v1_off = plc_handler.read_byte("V1")
+        fb_off = bool((v1_off >> PT2T1_FB_BIT) & 1)
 
-        logger.debug(f"[AFTER OFF] {OUT_BYTE}=0x{v0_off:02x} bits_set={_bits_set(v0_off)}")
-        logger.debug(
-            f"[AFTER OFF] {FB_BYTE}=0x{v1_off:02x} bits_set={_bits_set(v1_off)}  | "
-            f"{FB_BYTE}.{FB_BIT}={fb_off}  {WDT_BYTE}.{WDT_BIT}={wdt_off}"
-        )
+        logger.debug(f"[AFTER OFF] V0=0x{v0_off:02x} bits_set={_bits_set(v0_off)}")
+        logger.debug(f"[AFTER OFF] V1=0x{v1_off:02x} bits_set={_bits_set(v1_off)}  | V1.{PT2T1_FB_BIT}={fb_off}")
 
         logger.debug("--------------- QUICK CHECKS ----------------")
-        logger.debug(f"{OUT_BYTE}.{OUT_BIT} toggled ON?       {((v0_on >> OUT_BIT) & 1) == 1}")
-        logger.debug(f"{OUT_BYTE}.{OUT_BIT} toggled OFF?      {((v0_off >> OUT_BIT) & 1) == 0}")
-        logger.debug(f"Feedback {FB_BYTE}.{FB_BIT} ON?          {fb_on is True}")
-        logger.debug(f"Feedback {FB_BYTE}.{FB_BIT} OFF?         {fb_off is False}")
-        logger.debug(f"Watchdog {WDT_BYTE}.{WDT_BIT} baseline?   {wdt_before}")
-        logger.debug(f"Watchdog {WDT_BYTE}.{WDT_BIT} after ON?   {wdt_on}")
-        logger.debug(f"Watchdog {WDT_BYTE}.{WDT_BIT} after OFF?  {wdt_off}")
+        logger.debug(f"V0.{PT2T1_OUT_BIT} toggled ON?       {((v0_on >> PT2T1_OUT_BIT) & 1) == 1}")
+        logger.debug(f"V0.{PT2T1_OUT_BIT} toggled OFF?      {((v0_off >> PT2T1_OUT_BIT) & 1) == 0}")
+        logger.debug(f"Feedback V1.{PT2T1_FB_BIT} ON?       {fb_on is True}")
+        logger.debug(f"Feedback V1.{PT2T1_FB_BIT} OFF?      {fb_off is False}")
         logger.debug("--------------------------------------------")
 
     except Exception as e:
@@ -966,6 +1100,10 @@ class MainClass:
         self.status = PumpStatus()
         self.last_data_timestamp = datetime.now()
 
+        # Watchdog supervisor state
+        self._wdt_consecutive_high = 0
+        self._wdt_last_reset_attempt_monotonic = 0.0
+
         self.app = app
         self.socketio = socketio
 
@@ -980,24 +1118,6 @@ class MainClass:
             self.logger.error(f"Template directory missing: {TEMPLATE_DIR}")
         if not os.path.isfile(INDEX_TEMPLATE):
             self.logger.error(f"index.html missing at: {INDEX_TEMPLATE}")
-
-    def _check_keyboard_exit(self) -> None:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                if msvcrt.kbhit():
-                    _ = msvcrt.getch()
-                    self.logger.info("Keypress detected; exiting.")
-                    os._exit(0)
-            else:
-                import select
-                dr, _, _ = select.select([sys.stdin], [], [], 0)
-                if dr:
-                    _ = sys.stdin.readline()
-                    self.logger.info("Input detected; exiting.")
-                    os._exit(0)
-        except Exception:
-            pass
 
     def _on_flask_thread_done(self, gt: eventlet.greenthread.GreenThread) -> None:
         try:
@@ -1060,10 +1180,48 @@ class MainClass:
         except mysql.connector.Error as err:
             self.logger.error(f"DB error checking timestamp: {err}")
 
+    def _watchdog_supervisor(self, plc_handler: LogoPlcHandler) -> None:
+        """
+        Runtime watchdog reset:
+        - If WDT is HIGH for WDT_CONSECUTIVE_TRIP consecutive loops,
+          and cooldown has elapsed, perform reset attempt.
+        """
+        if self.status.WDT is True:
+            self._wdt_consecutive_high += 1
+        else:
+            self._wdt_consecutive_high = 0
+
+        if self._wdt_consecutive_high < WDT_CONSECUTIVE_TRIP:
+            return
+
+        now_m = time.monotonic()
+        if (now_m - self._wdt_last_reset_attempt_monotonic) < WDT_RESET_COOLDOWN_S:
+            return
+
+        self._wdt_last_reset_attempt_monotonic = now_m
+        self.logger.warning(
+            f"WDT supervisor: WDT=1 for {self._wdt_consecutive_high} consecutive loops; attempting reset "
+            f"(cooldown {WDT_RESET_COOLDOWN_S:.0f}s)."
+        )
+
+        cleared = reset_watchdog_if_needed(plc_handler, self.logger, timeout_s=WDT_RESET_TIMEOUT_S)
+
+        # After an attempt, force re-evaluation on next loops
+        self._wdt_consecutive_high = 0
+
+        if cleared:
+            self.logger.info("WDT supervisor: reset attempt succeeded (WDT cleared).")
+        else:
+            self.logger.error("WDT supervisor: reset attempt did NOT clear WDT.")
+
     def main_loop(self) -> None:
         try:
             plc_handler = LogoPlcHandler(self.logger, self.parser.plc_ip)
             self.logger.info("PLC handler created successfully.")
+
+            enforce_startup_outputs_off(plc_handler, self.logger)
+            reset_watchdog_if_needed(plc_handler, self.logger, timeout_s=WDT_RESET_TIMEOUT_S)
+
             algorithm = Algorithm(plc_handler, self.logger)
             self.logger.info("Algorithm created successfully.")
             self.logger.info("Entering main control loop.")
@@ -1091,12 +1249,18 @@ class MainClass:
                     self.last_data_timestamp = datetime.now()
 
                 try:
-                    self.status.BP = plc_handler.read_bit("V1", 0)
-                    self.status.PT2T1 = plc_handler.read_bit("V1", 1)  # CONFIRMED feedback
-                    self.status.PT1T2 = plc_handler.read_bit("V1", 2)
-                    self.status.WDT = plc_handler.read_bit("V1", 3)   # WATCHDOG V1.3
+                    self.status.BP = plc_handler.read_bit(BP_FB_BYTE, BP_FB_BIT)
+                    self.status.PT2T1 = plc_handler.read_bit(PT2T1_FB_BYTE, PT2T1_FB_BIT)
+                    self.status.PT1T2 = plc_handler.read_bit(PT1T2_FB_BYTE, PT1T2_FB_BIT)
+                    self.status.WDT = plc_handler.read_bit(WDT_STATUS_BYTE, WDT_STATUS_BIT)
                 except Exception as e:
                     self.logger.error(f"PLC read error: {e}")
+
+                # Runtime watchdog auto-reset
+                try:
+                    self._watchdog_supervisor(plc_handler)
+                except Exception as e:
+                    self.logger.error(f"WDT supervisor error: {e}")
 
                 try:
                     if self.status.BP is not None:
@@ -1105,9 +1269,6 @@ class MainClass:
                         self.update_status_in_db("PT2T1", self.status.PT2T1)
                     if self.status.PT1T2 is not None:
                         self.update_status_in_db("PT1T2", self.status.PT1T2)
-                    # If you have a WDT column in DB and want to store it, uncomment next line:
-                    # if self.status.WDT is not None:
-                    #     self.update_status_in_db("WDT", self.status.WDT)
                 except Exception as e:
                     self.logger.error(f"Error updating DB statuses: {e}")
 
@@ -1162,7 +1323,6 @@ def main() -> None:
     parser_obj = Parser(logger_obj)
     parser_obj.parse()
 
-    # Apply CLI override WITHOUT mutating frozen CFG.
     FORCE_PLC_WRITE = bool(getattr(parser_obj, "force_plc_write", FORCE_PLC_WRITE))
     logger_obj.logger.info(f"FORCE_PLC_WRITE set to {FORCE_PLC_WRITE}")
 
